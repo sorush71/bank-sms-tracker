@@ -234,7 +234,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 usage_count = usage_count + 1,
                 last_used_at = excluded.last_used_at
             """.trimIndent(),
-            arrayOf(cleanName, System.currentTimeMillis())
+            arrayOf<Any>(cleanName, System.currentTimeMillis())
         )
     }
 
