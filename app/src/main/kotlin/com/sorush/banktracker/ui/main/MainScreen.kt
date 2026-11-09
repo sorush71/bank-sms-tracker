@@ -508,6 +508,66 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Test Popup Simulator Section
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "🧪 تست و بررسی عملکرد پاپ‌آپ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "بدون نیاز به پیامک بانکی واقعی، می‌توانید پاپ‌آپ را امتحان و مشاهده کنید:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
+                                    putExtra("EXTRA_AMOUNT_TOMAN", 2600000L)
+                                    putExtra("EXTRA_TYPE", TransactionType.EXPENSE.name)
+                                    putExtra("EXTRA_BANK_NAME", "بانک قرض‌الحسنه رسالت")
+                                    putExtra("EXTRA_RAW_MESSAGE", "10.14423005.1\n-26,000,000\n08/14 00:23")
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("تست رسالت (-۲.۶ م)", fontSize = 11.sp)
+                        }
+                        Button(
+                            onClick = {
+                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
+                                    putExtra("EXTRA_AMOUNT_TOMAN", 87000L)
+                                    putExtra("EXTRA_TYPE", TransactionType.EXPENSE.name)
+                                    putExtra("EXTRA_BANK_NAME", "بانک پاسارگاد")
+                                    putExtra("EXTRA_RAW_MESSAGE", "777.888.27870097.1\n-870,000\n08/18 02:56")
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("تست پاسارگاد (-۸۷ ه)", fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+
         // Xiaomi HyperOS Settings Section
         item {
             Card(
