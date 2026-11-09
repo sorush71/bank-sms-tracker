@@ -6,7 +6,7 @@ plugins {
 
 android {
   namespace = "com.sorush.banktracker"
-  compileSdk = 35
+  compileSdk = 36
   defaultConfig {
     applicationId = "com.sorush.banktracker"
     minSdk = 26
