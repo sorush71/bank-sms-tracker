@@ -29,6 +29,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.sorush.banktracker.BuildConfig
 import com.sorush.banktracker.data.DatabaseHelper
 import com.sorush.banktracker.model.CategoryExpense
@@ -54,8 +57,9 @@ fun MainScreen() {
     val context = LocalContext.current
     val db = remember { DatabaseHelper.getInstance(context) }
     val scope = rememberCoroutineScope()
+    val prefs = remember { context.getSharedPreferences("bank_tracker_prefs", Context.MODE_PRIVATE) }
 
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: گزارش ماهانه, 1: تراکنش‌ها, 2: تنظیمات و بانک‌ها
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: داشبورد, 1: اقساط, 2: تراکنش‌ها, 3: تنظیمات
 
     // Permissions check
     var hasSmsPermission by remember {
@@ -68,11 +72,58 @@ fun MainScreen() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context) else true
         )
     }
+    var isSetupCompleted by remember {
+        mutableStateOf(prefs.getBoolean("setup_completed", false))
+    }
+    var showSetupDialog by remember {
+        mutableStateOf(!isSetupCompleted || !hasSmsPermission || !hasOverlayPermission)
+    }
+
+    // Lifecycle observer to re-check permissions live whenever returning from phone Settings
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasSmsPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
+                hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context) else true
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         hasSmsPermission = results[Manifest.permission.RECEIVE_SMS] == true
+    }
+
+    fun requestSms() {
+        val perms = mutableListOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        permissionLauncher.launch(perms.toTypedArray())
+    }
+
+    // Mandatory Setup Modal Dialog
+    if (showSetupDialog) {
+        MandatorySetupDialog(
+            hasSmsPermission = hasSmsPermission,
+            hasOverlayPermission = hasOverlayPermission,
+            onRequestSmsPermission = { requestSms() },
+            onRequestOverlayPermission = { XiaomiHelper.openOverlaySettings(context) },
+            onOpenAutostart = { XiaomiHelper.openAutostartSettings(context) },
+            onOpenBattery = { XiaomiHelper.openBatterySettings(context) },
+            onOpenPopupInBackground = { XiaomiHelper.openPopupInBackgroundSettings(context) },
+            onCompleteSetup = {
+                prefs.edit().putBoolean("setup_completed", true).apply()
+                isSetupCompleted = true
+                showSetupDialog = false
+            }
+        )
     }
 
     Scaffold(
@@ -145,13 +196,7 @@ fun MainScreen() {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (!hasSmsPermission) {
                                 Button(
-                                    onClick = {
-                                        val perms = mutableListOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                            perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                                        }
-                                        permissionLauncher.launch(perms.toTypedArray())
-                                    },
+                                    onClick = { requestSms() },
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
                                 ) {
@@ -176,9 +221,14 @@ fun MainScreen() {
                 0 -> MonthlyDashboardTab(db = db)
                 1 -> InstallmentsTab(db = db)
                 2 -> TransactionsHistoryTab(db = db)
-                3 -> SettingsTab(db = db, onRefreshPermissions = {
-                    hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context) else true
-                })
+                3 -> SettingsTab(
+                    db = db,
+                    hasSmsPermission = hasSmsPermission,
+                    hasOverlayPermission = hasOverlayPermission,
+                    onRequestSmsPermission = { requestSms() },
+                    onRequestOverlayPermission = { XiaomiHelper.openOverlaySettings(context) },
+                    onOpenSetupDialog = { showSetupDialog = true }
+                )
             }
         }
     }
@@ -1049,7 +1099,316 @@ fun TransactionRow(tx: Transaction) {
 }
 
 @Composable
-fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
+fun MandatorySetupDialog(
+    hasSmsPermission: Boolean,
+    hasOverlayPermission: Boolean,
+    onRequestSmsPermission: () -> Unit,
+    onRequestOverlayPermission: () -> Unit,
+    onOpenAutostart: () -> Unit,
+    onOpenBattery: () -> Unit,
+    onOpenPopupInBackground: () -> Unit,
+    onCompleteSetup: () -> Unit
+) {
+    var autostartVisited by remember { mutableStateOf(false) }
+    var batteryVisited by remember { mutableStateOf(false) }
+    var popupVisited by remember { mutableStateOf(false) }
+    val isXiaomi = remember { XiaomiHelper.isXiaomiDevice() }
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = { /* Modal dialog: requires user acknowledgment or valid permissions */ },
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🚀", fontSize = 22.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "راه‌اندازی و مجوزهای ضروری",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Text(
+                        text = "برای اینکه برنامه بتواند بدون وقفه پیامک‌های بانکی (رسالت و پاسارگاد) را بخواند و پنجره ثبت هزینه را بلافاصله نمایش دهد، تنظیم موارد زیر الزامی است:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 18.sp
+                    )
+                }
+
+                // ۱. مجوز پیامک
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (hasSmsPermission) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "۱. مجوز پیامک و اعلان‌ها",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (hasSmsPermission) Color(0xFF2E7D32) else Color(0xFFE65100)
+                                )
+                                if (hasSmsPermission) {
+                                    Text("✅ فعال است", fontSize = 11.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "برای رهگیری خودکار مبالغ واریز و برداشت بانکی",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!hasSmsPermission) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Button(
+                                    onClick = onRequestSmsPermission,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
+                                ) {
+                                    Text("درخواست مجوز پیامک", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ۲. مجوز پنجره شناور (Overlay)
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (hasOverlayPermission) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "۲. مجوز پنجره شناور (Overlay)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (hasOverlayPermission) Color(0xFF2E7D32) else Color(0xFFE65100)
+                                )
+                                if (hasOverlayPermission) {
+                                    Text("✅ فعال است", fontSize = 11.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "برای باز شدن خودکار پاپ‌آپ روی برنامه‌ها به محض دریافت پیامک",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!hasOverlayPermission) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Button(
+                                    onClick = onRequestOverlayPermission,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF57C00))
+                                ) {
+                                    Text("فعال‌سازی مجوز پاپ‌آپ (Overlay)", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ۳. شروع خودکار شیائومی
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (autostartVisited) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "۳. شروع خودکار (Autostart)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                if (autostartVisited) {
+                                    Text("✔️ مشاهده شد", fontSize = 11.sp, color = Color(0xFF2E7D32))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "برای روشن ماندن سرویس پس از راه‌اندازی مجدد و بستن برنامه‌ها",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    autostartVisited = true
+                                    onOpenAutostart()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("تنظیم شروع خودکار (شیائومی)", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                // ۴. باتری بدون محدودیت
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (batteryVisited) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "۴. باتری بدون محدودیت (No restrictions)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                if (batteryVisited) {
+                                    Text("✔️ مشاهده شد", fontSize = 11.sp, color = Color(0xFF2E7D32))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "جلوگیری از غیرفعال شدن پردازش در پس‌زمینه توسط HyperOS",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    batteryVisited = true
+                                    onOpenBattery()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("تنظیم باتری روی No restrictions", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                // ۵. پاپ‌آپ در پس‌زمینه شیائومی
+                if (isXiaomi) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (popupVisited) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "۵. مجوز پاپ‌آپ در پس‌زمینه (HyperOS)",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                    if (popupVisited) {
+                                        Text("✔️ مشاهده شد", fontSize = 11.sp, color = Color(0xFF2E7D32))
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "گزینه Display pop-up windows while running in background",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        popupVisited = true
+                                        onOpenPopupInBackground()
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("فعال‌سازی پاپ‌آپ پس‌زمینه شیائومی", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (!hasSmsPermission || !hasOverlayPermission) {
+                        Toast.makeText(
+                            context,
+                            "لطفاً ابتدا مجوزهای ۱ و ۲ (پیامک و پاپ‌آپ) را تایید کنید.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        onCompleteSetup()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (hasSmsPermission && hasOverlayPermission) MaterialTheme.colorScheme.primary else Color.Gray
+                )
+            ) {
+                Text(
+                    text = if (hasSmsPermission && hasOverlayPermission) "✅ ذخیره و ورود به برنامه" else "تأیید و ورود (نیاز به مجوزهای ۱ و ۲)",
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    )
+}
+
+@Composable
+fun SettingsTab(
+    db: DatabaseHelper,
+    hasSmsPermission: Boolean,
+    hasOverlayPermission: Boolean,
+    onRequestSmsPermission: () -> Unit,
+    onRequestOverlayPermission: () -> Unit,
+    onOpenSetupDialog: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -1057,7 +1416,7 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
     var newSenderId by remember { mutableStateOf("") }
     var newDisplayName by remember { mutableStateOf("") }
 
-    var updateStatusText by remember { mutableStateOf("نسخه فعلی: ${BuildConfig.VERSION_NAME}") }
+    var updateStatusText by remember { mutableStateOf("") }
     var isCheckingUpdate by remember { mutableStateOf(false) }
     var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
 
@@ -1067,69 +1426,138 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Test Popup Simulator Section
+        // --- 1. In-App Update Section (GitHub Updater) ---
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "🧪 تست و بررسی عملکرد پاپ‌آپ",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Text(
-                        text = "بدون نیاز به پیامک بانکی واقعی، می‌توانید پاپ‌آپ را امتحان و مشاهده کنید:",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Button(
-                            onClick = {
-                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
-                                    putExtra("EXTRA_AMOUNT_TOMAN", 260000L)
-                                    putExtra("EXTRA_TYPE", TransactionType.EXPENSE.name)
-                                    putExtra("EXTRA_BANK_NAME", "بانک قرض‌الحسنه رسالت")
-                                    putExtra("EXTRA_RAW_MESSAGE", "10.14423005.1\n-2,600,000\n08/14 00:23")
-                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                context.startActivity(intent)
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                        Text(
+                            text = "🔄 به‌روزرسانی برنامه (GitHub)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp)
                         ) {
-                            Text("🔴 تست برداشت (-۲۶۰ ه)", fontSize = 11.sp)
+                            Text(
+                                text = "نسخه فعلی: v${BuildConfig.VERSION_NAME}",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
-                        Button(
-                            onClick = {
-                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
-                                    putExtra("EXTRA_AMOUNT_TOMAN", 2600000L)
-                                    putExtra("EXTRA_TYPE", TransactionType.DEPOSIT.name)
-                                    putExtra("EXTRA_BANK_NAME", "بانک پاسارگاد")
-                                    putExtra("EXTRA_RAW_MESSAGE", "777.888.27870097.1\n+26,000,000\n08/18 02:56")
-                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "استعلام و دانلود مستقیم جدیدترین نسخه از مخزن گیت‌هاب (sorush71/bank-sms-tracker):",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Button(
+                        onClick = {
+                            isCheckingUpdate = true
+                            updateStatusText = "در حال بررسی گیت‌هاب..."
+                            scope.launch {
+                                val result = AppUpdater.checkForUpdate()
+                                isCheckingUpdate = false
+                                result.onSuccess { info ->
+                                    availableUpdate = info
+                                    if (info.isUpdateAvailable) {
+                                        updateStatusText = "🎉 نسخه جدید ${info.versionName} آماده دانلود است!"
+                                    } else {
+                                        updateStatusText = "✅ برنامه شما کاملاً به‌روز است (نسخه ${BuildConfig.VERSION_NAME})"
+                                    }
+                                }.onFailure { e ->
+                                    updateStatusText = "⚠️ خطا در بررسی آپدیت: ${e.message}"
                                 }
-                                context.startActivity(intent)
-                            },
-                            modifier = Modifier.weight(1f),
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isCheckingUpdate,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isCheckingUpdate) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("در حال بررسی گیت‌هاب...", fontSize = 13.sp)
+                        } else {
+                            Text("🔄 بررسی نسخه جدید در گیت‌هاب", fontSize = 13.sp)
+                        }
+                    }
+
+                    if (updateStatusText.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            color = if (availableUpdate?.isUpdateAvailable == true) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surface,
                             shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("🟢 تست واریز (+۲.۶ م)", fontSize = 11.sp)
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = updateStatusText,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (availableUpdate?.isUpdateAvailable == true) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
+                                )
+
+                                availableUpdate?.let { info ->
+                                    if (info.isUpdateAvailable) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "تغییرات نسخه ${info.versionName}:\n${info.releaseNotes}",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    AppUpdater.downloadAndInstallApk(context, info.downloadUrl, info.versionName)
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                            ) {
+                                                Text("⬇️ دانلود و نصب خودکار", fontSize = 12.sp)
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    AppUpdater.openInBrowser(context, info.downloadUrl)
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Text("🌐 دانلود از مرورگر", fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Xiaomi HyperOS Settings Section
+        // --- 2. Permissions & Xiaomi HyperOS Status Section ---
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -1137,45 +1565,93 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "تنظیمات اختصاصی شیائومی (HyperOS)",
+                        text = "⚙️ تنظیمات و مجوزهای سیستم (شیائومی / HyperOS)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "برای اطمینان از بالا آمدن بی‌درنگ پاپ‌آپ هنگام رسیدن پیامک:",
+                        text = "برای اطمینان از بالا آمدن بی‌درنگ پاپ‌آپ هنگام دریافت پیامک:",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    Button(
-                        onClick = { XiaomiHelper.openAutostartSettings(context) },
+                    // Permissions quick indicators
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("۱. فعال‌سازی شروع خودکار (Autostart)")
+                        Surface(
+                            color = if (hasSmsPermission) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (hasSmsPermission) "✅ پیامک: فعال" else "❌ پیامک: غیرفعال",
+                                modifier = Modifier.padding(8.dp),
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.Center,
+                                color = if (hasSmsPermission) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            )
+                        }
+                        Surface(
+                            color = if (hasOverlayPermission) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (hasOverlayPermission) "✅ پاپ‌آپ: فعال" else "❌ پاپ‌آپ: غیرفعال",
+                                modifier = Modifier.padding(8.dp),
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.Center,
+                                color = if (hasOverlayPermission) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Spacer(modifier = Modifier.height(10.dp))
                     Button(
-                        onClick = { XiaomiHelper.openBatterySettings(context) },
+                        onClick = onOpenSetupDialog,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
-                        Text("۲. مدیریت باتری (No restrictions)")
+                        Text("🚀 بازبینی فرآیند راه‌اندازی و مجوزها", fontSize = 13.sp)
                     }
+
                     Spacer(modifier = Modifier.height(6.dp))
-                    Button(
-                        onClick = { XiaomiHelper.openPopupInBackgroundSettings(context) },
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text("۳. نمایش پاپ‌آپ در پس‌زمینه (Xiaomi Pop-up)")
+                        OutlinedButton(
+                            onClick = { XiaomiHelper.openAutostartSettings(context) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Autostart", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { XiaomiHelper.openBatterySettings(context) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("باتری", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { XiaomiHelper.openPopupInBackgroundSettings(context) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("پاپ‌آپ پس‌زمینه", fontSize = 11.sp)
+                        }
                     }
                 }
             }
         }
 
-        // Whitelist Banks Section
+        // --- 3. Whitelist Banks Section ---
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -1247,72 +1723,68 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
             }
         }
 
-        // Category Management Section (Parmis & Custom Categories)
+        // --- 4. Category Management Section ---
         item {
             CategoryManagementCard(db = db)
         }
 
-        // In-App Update Section
+        // --- 5. Test Popup Simulator Section ---
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "به‌روزرسانی برنامه (GitHub Updater)",
+                        text = "🧪 تست و بررسی عملکرد پاپ‌آپ",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(text = updateStatusText, fontSize = 13.sp)
-
-                    availableUpdate?.let { info ->
-                        if (info.isUpdateAvailable) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "نسخه ${info.versionName} آماده دانلود است:\n${info.releaseNotes}",
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 12.sp
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    AppUpdater.downloadAndInstallApk(context, info.downloadUrl, info.versionName)
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("دانلود و نصب نسخه جدید")
-                            }
-                        }
-                    }
-
+                    Text(
+                        text = "بدون نیاز به پیامک بانکی واقعی، می‌توانید پاپ‌آپ را امتحان و مشاهده کنید:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
                     Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedButton(
-                        onClick = {
-                            isCheckingUpdate = true
-                            updateStatusText = "در حال بررسی گیت‌هاب..."
-                            scope.launch {
-                                val result = AppUpdater.checkForUpdate()
-                                isCheckingUpdate = false
-                                result.onSuccess { info ->
-                                    availableUpdate = info
-                                    if (info.isUpdateAvailable) {
-                                        updateStatusText = "نسخه جدید ${info.versionName} یافت شد!"
-                                    } else {
-                                        updateStatusText = "برنامه شما به‌روز است (نسخه ${BuildConfig.VERSION_NAME})"
-                                    }
-                                }.onFailure { e ->
-                                    updateStatusText = "خطا در بررسی آپدیت: ${e.message}"
-                                }
-                            }
-                        },
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !isCheckingUpdate,
-                        shape = RoundedCornerShape(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (isCheckingUpdate) "در حال بررسی..." else "بررسی نسخه جدید")
+                        Button(
+                            onClick = {
+                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
+                                    putExtra("EXTRA_AMOUNT_TOMAN", 260000L)
+                                    putExtra("EXTRA_TYPE", TransactionType.EXPENSE.name)
+                                    putExtra("EXTRA_BANK_NAME", "بانک قرض‌الحسنه رسالت")
+                                    putExtra("EXTRA_RAW_MESSAGE", "10.14423005.1\n-2,600,000\n08/14 00:23")
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                        ) {
+                            Text("🔴 تست برداشت (-۲۶۰ ه)", fontSize = 11.sp)
+                        }
+                        Button(
+                            onClick = {
+                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
+                                    putExtra("EXTRA_AMOUNT_TOMAN", 2600000L)
+                                    putExtra("EXTRA_TYPE", TransactionType.DEPOSIT.name)
+                                    putExtra("EXTRA_BANK_NAME", "بانک پاسارگاد")
+                                    putExtra("EXTRA_RAW_MESSAGE", "777.888.27870097.1\n+26,000,000\n08/18 02:56")
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                        ) {
+                            Text("🟢 تست واریز (+۲.۶ م)", fontSize = 11.sp)
+                        }
                     }
                 }
             }
@@ -1343,7 +1815,7 @@ fun CategoryManagementCard(db: DatabaseHelper) {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "🗂️ مدیریت دسته‌بندی‌ها (پارمیس و شخصی)",
+                text = "🗂️ مدیریت دسته‌بندی‌ها",
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp
             )

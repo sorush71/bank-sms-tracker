@@ -268,7 +268,7 @@ fun TransactionPopup(
                     // Parent Category Selector
                     if (categoryTree.isNotEmpty()) {
                         Text(
-                            text = "گروه اصلی (برگرفته از پارمیس):",
+                            text = "گروه اصلی:",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.align(Alignment.Start)

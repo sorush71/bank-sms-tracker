@@ -75,9 +75,19 @@ object AppUpdater {
         }
     }
 
+    fun openInBrowser(context: Context, url: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {}
+    }
+
     fun downloadAndInstallApk(context: Context, downloadUrl: String, versionName: String) {
+        val appContext = context.applicationContext
         val fileName = "BankTracker-v$versionName.apk"
-        val destination = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+        val destination = File(appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
         if (destination.exists()) {
             destination.delete()
         }
@@ -90,7 +100,7 @@ object AppUpdater {
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(true)
 
-        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val downloadId = dm.enqueue(request)
 
         // Register receiver for when download finishes to prompt install
@@ -107,13 +117,13 @@ object AppUpdater {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(
+            appContext.registerReceiver(
                 onComplete,
                 IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
                 Context.RECEIVER_NOT_EXPORTED
             )
         } else {
-            context.registerReceiver(
+            appContext.registerReceiver(
                 onComplete,
                 IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
             )
