@@ -3,6 +3,7 @@ package com.sorush.banktracker.ui.main
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
@@ -28,6 +29,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -40,6 +43,8 @@ import com.sorush.banktracker.model.MonthlySummary
 import com.sorush.banktracker.model.Transaction
 import com.sorush.banktracker.model.TransactionItem
 import com.sorush.banktracker.model.TransactionType
+import com.sorush.banktracker.parser.ParsedTransaction
+import com.sorush.banktracker.parser.TransactionParser
 import com.sorush.banktracker.updater.AppUpdater
 import com.sorush.banktracker.updater.UpdateInfo
 import com.sorush.banktracker.util.DeviceCompatibilityHelper
@@ -61,6 +66,7 @@ fun MainScreen() {
     val prefs = remember { context.getSharedPreferences("bank_tracker_prefs", Context.MODE_PRIVATE) }
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0: داشبورد, 1: اقساط, 2: تراکنش‌ها, 3: تنظیمات
+    var refreshTrigger by remember { mutableIntStateOf(0) }
 
     // Permissions check
     var hasSmsPermission by remember {
@@ -91,6 +97,7 @@ fun MainScreen() {
                 hasSmsPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
                 hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context) else true
                 isBatteryIgnored = DeviceCompatibilityHelper.isBatteryOptimizationIgnored(context)
+                refreshTrigger++
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -224,9 +231,9 @@ fun MainScreen() {
             }
 
             when (selectedTab) {
-                0 -> MonthlyDashboardTab(db = db)
+                0 -> MonthlyDashboardTab(db = db, refreshTrigger = refreshTrigger)
                 1 -> InstallmentsTab(db = db)
-                2 -> TransactionsHistoryTab(db = db)
+                2 -> TransactionsHistoryTab(db = db, refreshTrigger = refreshTrigger)
                 3 -> SettingsTab(
                     db = db,
                     hasSmsPermission = hasSmsPermission,
@@ -243,21 +250,24 @@ fun MainScreen() {
 }
 
 @Composable
-fun MonthlyDashboardTab(db: DatabaseHelper) {
+fun MonthlyDashboardTab(db: DatabaseHelper, refreshTrigger: Int = 0) {
     val context = LocalContext.current
     val now = remember { JalaliCalendar.now() }
     var currentYear by remember { mutableIntStateOf(now.year) }
     var currentMonth by remember { mutableIntStateOf(now.month) }
 
+    // Filter categories: null for all, false for personal, true for business
+    var categoryModeFilter by remember { mutableStateOf<Boolean?>(null) }
+
     var summary by remember { mutableStateOf<MonthlySummary?>(null) }
     var pendingTransactions by remember { mutableStateOf(listOf<Transaction>()) }
 
     fun refresh() {
-        summary = db.getMonthlySummary(currentYear, currentMonth)
+        summary = db.getMonthlySummary(currentYear, currentMonth, filterBusiness = categoryModeFilter)
         pendingTransactions = db.getPendingTransactions()
     }
 
-    LaunchedEffect(currentYear, currentMonth) {
+    LaunchedEffect(currentYear, currentMonth, categoryModeFilter, refreshTrigger) {
         refresh()
     }
 
@@ -472,14 +482,99 @@ fun MonthlyDashboardTab(db: DatabaseHelper) {
             }
         }
 
-        // Category Breakdown Header
+        // Business vs Personal Breakdown Card
         item {
-            Text(
-                text = "تفکیک مخارج بر اساس دسته‌بندی",
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            summary?.let { s ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "تفکیک مخارج کاری و شخصی این ماه:",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Personal Card
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFEDE7F6))
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("🏠 مخارج شخصی", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4527A0))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        "${NumberFormat.getNumberInstance(Locale.US).format(s.personalExpenseToman)} ت",
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF311B92)
+                                    )
+                                }
+                            }
+
+                            // Business Card
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFE0F2F1))
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("💼 کاری (فست‌فود)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00695C))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        "${NumberFormat.getNumberInstance(Locale.US).format(s.businessExpenseToman)} ت",
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF004D40)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Category Breakdown Header with Filter Chips
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "دسته‌بندی مخارج:",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FilterChip(
+                        selected = categoryModeFilter == null,
+                        onClick = { categoryModeFilter = null },
+                        label = { Text("همه", fontSize = 10.sp) }
+                    )
+                    FilterChip(
+                        selected = categoryModeFilter == false,
+                        onClick = { categoryModeFilter = false },
+                        label = { Text("🏠 شخصی", fontSize = 10.sp) }
+                    )
+                    FilterChip(
+                        selected = categoryModeFilter == true,
+                        onClick = { categoryModeFilter = true },
+                        label = { Text("💼 کاری", fontSize = 10.sp) }
+                    )
+                }
+            }
         }
 
         // Category Breakdown Items
@@ -932,22 +1027,70 @@ fun AddInstallmentDialog(
     )
 }
 
+data class ScannedSmsItem(
+    val smsId: Long,
+    val sender: String,
+    val body: String,
+    val timestamp: Long,
+    val parsed: ParsedTransaction,
+    val alreadySaved: Boolean,
+    var isSelected: Boolean,
+    var isBusiness: Boolean
+)
+
 @Composable
-fun TransactionsHistoryTab(db: DatabaseHelper) {
+fun TransactionsHistoryTab(db: DatabaseHelper, refreshTrigger: Int = 0) {
+    val context = LocalContext.current
     var transactions by remember { mutableStateOf(listOf<Transaction>()) }
     var searchQuery by remember { mutableStateOf("") }
+    var modeFilter by remember { mutableStateOf<Boolean?>(null) } // null: همه, false: شخصی, true: کاری
+    var showScannerDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        transactions = db.getAllTransactions(limit = 200)
+    fun refresh() {
+        transactions = db.getAllTransactions(limit = 300)
     }
 
-    val filtered = remember(transactions, searchQuery) {
-        if (searchQuery.isBlank()) transactions
-        else transactions.filter {
-            it.category.contains(searchQuery, ignoreCase = true) ||
-            it.bankName.contains(searchQuery, ignoreCase = true) ||
-            it.amountToman.toString().contains(searchQuery)
+    LaunchedEffect(refreshTrigger) {
+        refresh()
+    }
+
+    val filtered = remember(transactions, searchQuery, modeFilter) {
+        transactions.filter { tx ->
+            val matchesSearch = if (searchQuery.isBlank()) true else {
+                tx.category.contains(searchQuery, ignoreCase = true) ||
+                tx.bankName.contains(searchQuery, ignoreCase = true) ||
+                tx.amountToman.toString().contains(searchQuery)
+            }
+            val matchesMode = when (modeFilter) {
+                true -> tx.isBusiness
+                false -> !tx.isBusiness
+                null -> true
+            }
+            matchesSearch && matchesMode
         }
+    }
+
+    // Permission launcher for READ_SMS
+    val readSmsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showScannerDialog = true
+        } else {
+            Toast.makeText(context, "برای اسکن پیامک‌ها، مجوز خواندن پیامک لازم است.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    if (showScannerDialog) {
+        SmsScannerDialog(
+            db = db,
+            onDismiss = { showScannerDialog = false },
+            onImportComplete = { count ->
+                showScannerDialog = false
+                refresh()
+                Toast.makeText(context, "$count تراکنش با موفقیت به سیستم اضافه شد", Toast.LENGTH_SHORT).show()
+            }
+        )
     }
 
     Column(
@@ -955,6 +1098,38 @@ fun TransactionsHistoryTab(db: DatabaseHelper) {
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Top Action Row: Header + Scan SMS Button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "تاریخچه تراکنش‌ها",
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+
+            Button(
+                onClick = {
+                    val hasPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
+                    if (hasPerm) {
+                        showScannerDialog = true
+                    } else {
+                        readSmsLauncher.launch(Manifest.permission.READ_SMS)
+                    }
+                },
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("📥 اسکن پیامک‌های گذشته", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Search Bar
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
@@ -964,7 +1139,33 @@ fun TransactionsHistoryTab(db: DatabaseHelper) {
             singleLine = true
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Mode Filter Chips
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("نمایش:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            FilterChip(
+                selected = modeFilter == null,
+                onClick = { modeFilter = null },
+                label = { Text("همه (${transactions.size})", fontSize = 11.sp) }
+            )
+            FilterChip(
+                selected = modeFilter == false,
+                onClick = { modeFilter = false },
+                label = { Text("🏠 شخصی", fontSize = 11.sp) }
+            )
+            FilterChip(
+                selected = modeFilter == true,
+                onClick = { modeFilter = true },
+                label = { Text("💼 کاری", fontSize = 11.sp) }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         if (filtered.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -975,8 +1176,17 @@ fun TransactionsHistoryTab(db: DatabaseHelper) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(filtered) { tx ->
-                    TransactionRow(tx)
+                items(filtered, key = { it.id }) { tx ->
+                    TransactionRow(
+                        tx = tx,
+                        onToggleBusiness = {
+                            val newMode = !tx.isBusiness
+                            db.updateTransactionBusinessMode(tx.id, newMode)
+                            refresh()
+                            val msg = if (newMode) "تراکنش به هزینه‌های کاری تغییر یافت" else "تراکنش به هزینه‌های شخصی تغییر یافت"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    )
                 }
             }
         }
@@ -984,7 +1194,7 @@ fun TransactionsHistoryTab(db: DatabaseHelper) {
 }
 
 @Composable
-fun TransactionRow(tx: Transaction) {
+fun TransactionRow(tx: Transaction, onToggleBusiness: (() -> Unit)? = null) {
     val date = remember(tx.timestamp) {
         val j = JalaliCalendar.fromTimestamp(tx.timestamp)
         val sdf = SimpleDateFormat("HH:mm", Locale.US)
@@ -1021,11 +1231,35 @@ fun TransactionRow(tx: Transaction) {
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )
-                    Text(
-                        text = "${tx.bankName} | $date",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+
+                    Row(
+                        modifier = Modifier.padding(top = 3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${tx.bankName} | $date",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        // Mode chip badge (clickable to switch)
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (tx.isBusiness) Color(0xFFE0F2F1) else Color(0xFFEDE7F6))
+                                .clickable { onToggleBusiness?.invoke() }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = if (tx.isBusiness) "💼 کاری" else "🏠 شخصی",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (tx.isBusiness) Color(0xFF00695C) else Color(0xFF512DA8)
+                            )
+                        }
+                    }
+
                     if (tx.notes.isNotBlank()) {
                         Text(
                             text = "📝 ${tx.notes}",
@@ -1099,6 +1333,377 @@ fun TransactionRow(tx: Transaction) {
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SmsScannerDialog(
+    db: DatabaseHelper,
+    onDismiss: () -> Unit,
+    onImportComplete: (Int) -> Unit
+) {
+    val context = LocalContext.current
+    var isScanning by remember { mutableStateOf(true) }
+    val scannedList = remember { mutableStateListOf<ScannedSmsItem>() }
+    var filterType by remember { mutableStateOf<TransactionType?>(null) } // null: همه, DEPOSIT, EXPENSE
+    var showOnlyNew by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        isScanning = true
+        val results = mutableListOf<ScannedSmsItem>()
+        try {
+            val uri = Uri.parse("content://sms/inbox")
+            val cursor = context.contentResolver.query(
+                uri,
+                arrayOf("_id", "address", "body", "date"),
+                null,
+                null,
+                "date DESC LIMIT 400"
+            )
+            cursor?.use {
+                val idIdx = it.getColumnIndex("_id")
+                val addrIdx = it.getColumnIndex("address")
+                val bodyIdx = it.getColumnIndex("body")
+                val dateIdx = it.getColumnIndex("date")
+
+                while (it.moveToNext()) {
+                    val smsId = if (idIdx >= 0) it.getLong(idIdx) else 0L
+                    val sender = if (addrIdx >= 0) it.getString(addrIdx) ?: "" else ""
+                    val body = if (bodyIdx >= 0) it.getString(bodyIdx) ?: "" else ""
+                    val timestamp = if (dateIdx >= 0) it.getLong(dateIdx) else System.currentTimeMillis()
+
+                    val parsed = TransactionParser.parse(sender, body)
+                    if (parsed != null) {
+                        val alreadySaved = db.existsTransaction(body, timestamp)
+                        results.add(
+                            ScannedSmsItem(
+                                smsId = smsId,
+                                sender = sender,
+                                body = body,
+                                timestamp = timestamp,
+                                parsed = parsed,
+                                alreadySaved = alreadySaved,
+                                isSelected = !alreadySaved,
+                                isBusiness = false
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        scannedList.clear()
+        scannedList.addAll(results)
+        isScanning = false
+    }
+
+    val visibleItems = remember(scannedList.toList(), filterType, showOnlyNew) {
+        scannedList.filter { item ->
+            val matchesType = filterType == null || item.parsed.type == filterType
+            val matchesNew = if (showOnlyNew) !item.alreadySaved else true
+            matchesType && matchesNew
+        }
+    }
+
+    val selectedCount = scannedList.count { it.isSelected && !it.alreadySaved }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.88f)
+                .padding(8.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "📥 اسکن پیامک‌های بانکی گذشته",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Text("✕", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                if (isScanning) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("در حال جستجو و تحلیل پیامک‌های بانکی...", fontSize = 13.sp)
+                        }
+                    }
+                } else {
+                    val totalFound = scannedList.size
+                    val newCount = scannedList.count { !it.alreadySaved }
+
+                    Text(
+                        text = "$totalFound پیامک بانکی کشف شد ($newCount مورد جدید)",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Filters & Quick Actions
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = filterType == null,
+                            onClick = { filterType = null },
+                            label = { Text("همه", fontSize = 10.sp) }
+                        )
+                        FilterChip(
+                            selected = filterType == TransactionType.EXPENSE,
+                            onClick = { filterType = TransactionType.EXPENSE },
+                            label = { Text("برداشت", fontSize = 10.sp) }
+                        )
+                        FilterChip(
+                            selected = filterType == TransactionType.DEPOSIT,
+                            onClick = { filterType = TransactionType.DEPOSIT },
+                            label = { Text("واریز", fontSize = 10.sp) }
+                        )
+                        FilterChip(
+                            selected = showOnlyNew,
+                            onClick = { showOnlyNew = !showOnlyNew },
+                            label = { Text("فقط جدیدها", fontSize = 10.sp) }
+                        )
+                    }
+
+                    // Batch select buttons
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        TextButton(
+                            onClick = {
+                                scannedList.forEachIndexed { idx, it ->
+                                    if (!it.alreadySaved) scannedList[idx] = it.copy(isSelected = true)
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("انتخاب همه جدیدها", fontSize = 11.sp)
+                        }
+
+                        TextButton(
+                            onClick = {
+                                scannedList.forEachIndexed { idx, it ->
+                                    scannedList[idx] = it.copy(isSelected = false)
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("لغو انتخاب", fontSize = 11.sp)
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        TextButton(
+                            onClick = {
+                                scannedList.forEachIndexed { idx, it ->
+                                    if (it.isSelected) scannedList[idx] = it.copy(isBusiness = !it.isBusiness)
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("تغییر کاری/شخصی", fontSize = 11.sp)
+                        }
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    if (visibleItems.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (showOnlyNew && newCount == 0)
+                                    "تمام پیامک‌های بانکی قبلاً در دیتابیس ثبت شده‌اند."
+                                else "هیچ تراکنشی با این فیلتر یافت نشد.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                fontSize = 13.sp
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(visibleItems, key = { it.smsId }) { item ->
+                                val realIndex = scannedList.indexOfFirst { it.smsId == item.smsId }
+                                val isDeposit = item.parsed.type == TransactionType.DEPOSIT
+                                val sign = if (isDeposit) "+" else "-"
+                                val color = if (isDeposit) Color(0xFF2E7D32) else Color(0xFFC62828)
+
+                                val jDate = remember(item.timestamp) {
+                                    val j = JalaliCalendar.fromTimestamp(item.timestamp)
+                                    val sdf = SimpleDateFormat("HH:mm", Locale.US)
+                                    "${j.formatted()} ${sdf.format(Date(item.timestamp))}"
+                                }
+
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (item.alreadySaved) Color(0xFFF5F5F5) else MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = item.isSelected,
+                                            enabled = !item.alreadySaved,
+                                            onCheckedChange = { chk ->
+                                                if (realIndex >= 0) {
+                                                    scannedList[realIndex] = item.copy(isSelected = chk)
+                                                }
+                                            }
+                                        )
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = item.parsed.bankName,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                                Text(
+                                                    text = "$sign${NumberFormat.getNumberInstance(Locale.US).format(item.parsed.amountToman)} ت",
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 13.sp,
+                                                    color = color
+                                                )
+                                            }
+
+                                            Spacer(modifier = Modifier.height(2.dp))
+
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = jDate,
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+
+                                                if (item.alreadySaved) {
+                                                    Text(
+                                                        text = "قبلاً ثبت شده",
+                                                        fontSize = 10.sp,
+                                                        color = Color.Gray,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                } else {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(6.dp))
+                                                            .background(if (item.isBusiness) Color(0xFFE0F2F1) else Color(0xFFEDE7F6))
+                                                            .clickable {
+                                                                if (realIndex >= 0) {
+                                                                    scannedList[realIndex] = item.copy(isBusiness = !item.isBusiness)
+                                                                }
+                                                            }
+                                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (item.isBusiness) "💼 کاری" else "🏠 شخصی",
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (item.isBusiness) Color(0xFF00695C) else Color(0xFF512DA8)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Bottom Action Button
+                    Button(
+                        onClick = {
+                            val toImport = scannedList.filter { it.isSelected && !it.alreadySaved }
+                            toImport.forEach { item ->
+                                db.insertTransaction(
+                                    amountToman = item.parsed.amountToman,
+                                    type = item.parsed.type,
+                                    category = "تراکنش بانکی",
+                                    subCategory = item.parsed.bankName,
+                                    bankName = item.parsed.bankName,
+                                    timestamp = item.timestamp,
+                                    rawMessage = item.body,
+                                    isIgnored = false,
+                                    isPending = false,
+                                    isBusiness = item.isBusiness,
+                                    notes = "وارد شده از اسکن پیامک"
+                                )
+                            }
+                            onImportComplete(toImport.size)
+                        },
+                        enabled = selectedCount > 0,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text(
+                            text = if (selectedCount > 0) "📥 درون‌ریزی $selectedCount تراکنش انتخاب‌شده" else "هیچ تراکنشی انتخاب نشده",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

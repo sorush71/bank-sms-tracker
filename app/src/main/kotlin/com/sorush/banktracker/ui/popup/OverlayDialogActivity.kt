@@ -63,7 +63,7 @@ class OverlayDialogActivity : ComponentActivity() {
                     bankName = bankName,
                     rawMessage = rawMessage,
                     onDismiss = { finish() },
-                    onSave = { category, subCategory, notes, items ->
+                    onSave = { category, subCategory, notes, isBusiness, items ->
                         val db = DatabaseHelper.getInstance(applicationContext)
                         if (txId != -1L) {
                             db.updateTransactionCategorization(
@@ -72,6 +72,7 @@ class OverlayDialogActivity : ComponentActivity() {
                                 subCategory = subCategory,
                                 notes = notes,
                                 isIgnored = false,
+                                isBusiness = isBusiness,
                                 items = items
                             )
                             SmsReceiver.cancelNotification(applicationContext, txId.toInt())
@@ -85,11 +86,13 @@ class OverlayDialogActivity : ComponentActivity() {
                                 rawMessage = rawMessage,
                                 isIgnored = false,
                                 isPending = false,
+                                isBusiness = isBusiness,
                                 notes = notes,
                                 items = items
                             )
                         }
-                        Toast.makeText(applicationContext, "تراکنش در دسته «$category» ثبت شد", Toast.LENGTH_SHORT).show()
+                        val tag = if (isBusiness) "کاری" else "شخصی"
+                        Toast.makeText(applicationContext, "تراکنش $tag در دسته «$category» ثبت شد", Toast.LENGTH_SHORT).show()
                         finish()
                     },
                     onIgnore = {
@@ -132,7 +135,7 @@ fun TransactionPopup(
     bankName: String,
     rawMessage: String,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, List<TransactionItem>) -> Unit,
+    onSave: (String, String, String, Boolean, List<TransactionItem>) -> Unit,
     onIgnore: () -> Unit
 ) {
     val context = LocalContext.current
@@ -140,6 +143,9 @@ fun TransactionPopup(
 
     // Mode: 0 for Simple Categorization, 1 for Split Purchase (فاکتور چندقلمی)
     var isSplitMode by remember { mutableStateOf(false) }
+
+    // Business vs Personal toggle (e.g. fast-food business vs personal)
+    var isBusiness by remember { mutableStateOf(false) }
 
     var categoryText by remember { mutableStateOf("") }
     var selectedParentCategory by remember { mutableStateOf("خوراک و سوپرمارکت") }
@@ -234,8 +240,41 @@ fun TransactionPopup(
                     textAlign = TextAlign.Center
                 )
 
-                // Toggle between Simple and Split Invoice
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // Business vs Personal Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !isBusiness,
+                        onClick = { isBusiness = false },
+                        label = {
+                            Text(
+                                "🏠 هزینه شخصی",
+                                fontSize = 11.sp,
+                                fontWeight = if (!isBusiness) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = isBusiness,
+                        onClick = { isBusiness = true },
+                        label = {
+                            Text(
+                                "💼 کاری (فست‌فود)",
+                                fontSize = 11.sp,
+                                fontWeight = if (isBusiness) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                // Toggle between Simple and Split Invoice
+                Spacer(modifier = Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -550,10 +589,10 @@ fun TransactionPopup(
                                     Toast.makeText(context, "لطفاً نام یا زیربخش همه اقلام را مشخص کنید.", Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
-                                onSave(selectedParentCategory, "فاکتور چندقلمی", notesText, splitItems.toList())
+                                onSave(selectedParentCategory, "فاکتور چندقلمی", notesText, isBusiness, splitItems.toList())
                             } else {
                                 val finalSubCat = if (categoryText.isBlank()) "سایر" else categoryText.trim()
-                                onSave(selectedParentCategory, finalSubCat, notesText, emptyList())
+                                onSave(selectedParentCategory, finalSubCat, notesText, isBusiness, emptyList())
                             }
                         },
                         enabled = isSumEqual,

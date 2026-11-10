@@ -11,7 +11,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         const val DATABASE_NAME = "bank_tracker.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 4
 
         private const val TABLE_TRANSACTIONS = "transactions"
         private const val TABLE_TRANSACTION_ITEMS = "transaction_items"
@@ -43,6 +43,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 raw_message TEXT NOT NULL,
                 is_ignored INTEGER NOT NULL DEFAULT 0,
                 is_pending INTEGER NOT NULL DEFAULT 0,
+                is_business INTEGER NOT NULL DEFAULT 0,
                 notes TEXT NOT NULL DEFAULT ''
             )
         """.trimIndent())
@@ -286,6 +287,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
             seedCategoryTree(db)
         }
+        if (oldVersion < 4) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN is_business INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Exception) {}
+        }
     }
 
     // --- Transactions & Split Items ---
@@ -300,6 +306,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         rawMessage: String = "",
         isIgnored: Boolean = false,
         isPending: Boolean = false,
+        isBusiness: Boolean = false,
         notes: String = "",
         items: List<TransactionItem> = emptyList()
     ): Long {
@@ -314,6 +321,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put("raw_message", rawMessage)
             put("is_ignored", if (isIgnored) 1 else 0)
             put("is_pending", if (isPending) 1 else 0)
+            put("is_business", if (isBusiness) 1 else 0)
             put("notes", notes)
         }
         val id = db.insert(TABLE_TRANSACTIONS, null, cv)
@@ -350,6 +358,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         subCategory: String,
         notes: String,
         isIgnored: Boolean,
+        isBusiness: Boolean = false,
         items: List<TransactionItem>
     ) {
         val db = writableDatabase
@@ -359,6 +368,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put("notes", notes)
             put("is_ignored", if (isIgnored) 1 else 0)
             put("is_pending", 0)
+            put("is_business", if (isBusiness) 1 else 0)
         }
         db.update(TABLE_TRANSACTIONS, cv, "id = ?", arrayOf(txId.toString()))
 
@@ -373,11 +383,28 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         }
     }
 
+    fun updateTransactionBusinessMode(txId: Long, isBusiness: Boolean) {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("is_business", if (isBusiness) 1 else 0)
+        }
+        db.update(TABLE_TRANSACTIONS, cv, "id = ?", arrayOf(txId.toString()))
+    }
+
+    fun existsTransaction(rawMessage: String, timestamp: Long): Boolean {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT id FROM $TABLE_TRANSACTIONS WHERE raw_message = ? OR timestamp = ? LIMIT 1",
+            arrayOf(rawMessage, timestamp.toString())
+        )
+        return cursor.use { it.moveToFirst() }
+    }
+
     fun getPendingTransactions(): List<Transaction> {
         val list = mutableListOf<Transaction>()
         val db = readableDatabase
         val cursor = db.rawQuery(
-            "SELECT id, amount_toman, type, category, sub_category, bank_name, timestamp, raw_message, is_ignored, is_pending, notes " +
+            "SELECT id, amount_toman, type, category, sub_category, bank_name, timestamp, raw_message, is_ignored, is_pending, notes, is_business " +
             "FROM $TABLE_TRANSACTIONS WHERE is_pending = 1 AND is_ignored = 0 ORDER BY timestamp DESC",
             null
         )
@@ -393,7 +420,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val list = mutableListOf<Transaction>()
         val db = readableDatabase
         val cursor = db.rawQuery(
-            "SELECT id, amount_toman, type, category, sub_category, bank_name, timestamp, raw_message, is_ignored, is_pending, notes " +
+            "SELECT id, amount_toman, type, category, sub_category, bank_name, timestamp, raw_message, is_ignored, is_pending, notes, is_business " +
             "FROM $TABLE_TRANSACTIONS ORDER BY timestamp DESC LIMIT ?",
             arrayOf(limit.toString())
         )
@@ -433,6 +460,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     }
 
     private fun cursorToTransaction(c: android.database.Cursor): Transaction {
+        val isBusinessIdx = c.getColumnIndex("is_business")
+        val isBusiness = if (isBusinessIdx >= 0) c.getInt(isBusinessIdx) == 1 else false
         return Transaction(
             id = c.getLong(0),
             amountToman = c.getLong(1),
@@ -444,55 +473,72 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             rawMessage = c.getString(7),
             isIgnored = c.getInt(8) == 1,
             isPending = c.getInt(9) == 1,
-            notes = c.getString(10)
+            notes = c.getString(10),
+            isBusiness = isBusiness
         )
     }
 
-    fun getMonthlySummary(jYear: Int, jMonth: Int): MonthlySummary {
+    fun getMonthlySummary(jYear: Int, jMonth: Int, filterBusiness: Boolean? = null): MonthlySummary {
         val (startTime, endTime) = JalaliCalendar.getMonthRangeTimestamps(jYear, jMonth)
         val db = readableDatabase
 
         var totalDeposit = 0L
         var totalExpense = 0L
+        var personalExpense = 0L
+        var businessExpense = 0L
+        var personalDeposit = 0L
+        var businessDeposit = 0L
 
         val totalCursor = db.rawQuery(
             """
-            SELECT type, SUM(amount_toman) 
+            SELECT type, is_business, SUM(amount_toman) 
             FROM $TABLE_TRANSACTIONS 
             WHERE is_ignored = 0 AND is_pending = 0 AND timestamp BETWEEN ? AND ?
-            GROUP BY type
+            GROUP BY type, is_business
             """.trimIndent(),
             arrayOf(startTime.toString(), endTime.toString())
         )
         totalCursor.use {
             while (it.moveToNext()) {
                 val type = it.getString(0)
-                val sum = it.getLong(1)
+                val isBiz = it.getInt(1) == 1
+                val sum = it.getLong(2)
                 if (type == TransactionType.DEPOSIT.name) {
-                    totalDeposit = sum
+                    totalDeposit += sum
+                    if (isBiz) businessDeposit += sum else personalDeposit += sum
                 } else if (type == TransactionType.EXPENSE.name) {
-                    totalExpense = sum
+                    totalExpense += sum
+                    if (isBiz) businessExpense += sum else personalExpense += sum
                 }
             }
         }
 
         val categoryList = mutableListOf<CategoryExpense>()
-        val catCursor = db.rawQuery(
-            """
+        val catQuery = StringBuilder("""
             SELECT category, SUM(amount_toman), COUNT(id)
             FROM $TABLE_TRANSACTIONS 
             WHERE is_ignored = 0 AND is_pending = 0 AND type = 'EXPENSE' AND timestamp BETWEEN ? AND ?
-            GROUP BY category
-            ORDER BY SUM(amount_toman) DESC
-            """.trimIndent(),
-            arrayOf(startTime.toString(), endTime.toString())
-        )
+        """.trimIndent())
+        val args = mutableListOf(startTime.toString(), endTime.toString())
+
+        if (filterBusiness != null) {
+            catQuery.append(" AND is_business = ?")
+            args.add(if (filterBusiness) "1" else "0")
+        }
+        catQuery.append(" GROUP BY category ORDER BY SUM(amount_toman) DESC")
+
+        val catCursor = db.rawQuery(catQuery.toString(), args.toTypedArray())
+        val effectiveExpense = when (filterBusiness) {
+            true -> businessExpense
+            false -> personalExpense
+            null -> totalExpense
+        }
         catCursor.use {
             while (it.moveToNext()) {
                 val catName = it.getString(0)
                 val sum = it.getLong(1)
                 val count = it.getInt(2)
-                val percentage = if (totalExpense > 0) (sum.toFloat() / totalExpense.toFloat()) * 100f else 0f
+                val percentage = if (effectiveExpense > 0) (sum.toFloat() / effectiveExpense.toFloat()) * 100f else 0f
                 categoryList.add(CategoryExpense(catName, sum, percentage, count))
             }
         }
@@ -505,6 +551,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             totalDepositToman = totalDeposit,
             totalExpenseToman = totalExpense,
             balanceToman = totalDeposit - totalExpense,
+            personalExpenseToman = personalExpense,
+            businessExpenseToman = businessExpense,
+            personalDepositToman = personalDeposit,
+            businessDepositToman = businessDeposit,
             categoryBreakdown = categoryList
         )
     }

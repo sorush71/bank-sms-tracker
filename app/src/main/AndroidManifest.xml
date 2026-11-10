@@ -33,8 +33,7 @@
             android:name=".ui.popup.OverlayDialogActivity"
             android:exported="true"
             android:theme="@style/Theme.BankTracker.Dialog"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTask" />
+            android:excludeFromRecents="true" />
 
         <receiver
             android:name=".receiver.SmsReceiver"

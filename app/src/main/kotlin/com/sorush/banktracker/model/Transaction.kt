@@ -16,6 +16,7 @@ data class Transaction(
     val rawMessage: String,
     val isIgnored: Boolean = false,
     val isPending: Boolean = false,
+    val isBusiness: Boolean = false,
     val notes: String = "",
     val items: List<TransactionItem> = emptyList()
 )
@@ -51,6 +52,10 @@ data class MonthlySummary(
     val totalDepositToman: Long,
     val totalExpenseToman: Long,
     val balanceToman: Long,
+    val personalExpenseToman: Long = 0L,
+    val businessExpenseToman: Long = 0L,
+    val personalDepositToman: Long = 0L,
+    val businessDepositToman: Long = 0L,
     val categoryBreakdown: List<CategoryExpense>
 )
 

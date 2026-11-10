@@ -82,38 +82,41 @@ object JalaliCalendar {
     }
 
     fun jalaliToGregorianCalendar(jy: Int, jm: Int, jd: Int, hour: Int, min: Int, sec: Int): Calendar {
-        var days = (jy - 979) * 365 + ((jy - 979) / 33) * 8 + (((jy - 979) % 33 + 3) / 4)
-        for (i in 0 until (jm - 1)) {
-            days += if (i < 6) 31 else 30
+        val jyNormalized = jy + 1595
+        var days = -355668 + (365 * jyNormalized) + (jyNormalized / 33) * 8 + (((jyNormalized % 33) + 3) / 4) + jd
+        if (jm < 7) {
+            days += (jm - 1) * 31
+        } else {
+            days += ((jm - 7) * 30) + 186
         }
-        days += jd - 1
 
-        var gy = 1600 + 400 * (days / 146097)
+        var gy = 400 * (days / 146097)
         days %= 146097
-        if (days >= 36525) {
-            days--
+        if (days > 36524) {
+            days -= 1
             gy += 100 * (days / 36524)
             days %= 36524
-            if (days >= 365) days++
+            if (days >= 365) {
+                days += 1
+            }
         }
         gy += 4 * (days / 1461)
         days %= 1461
-        if (days >= 366) {
-            days--
-            gy += days / 365
-            days %= 365
+        if (days > 365) {
+            gy += (days - 1) / 365
+            days = (days - 1) % 365
         }
 
-        val gDaysInMonth = intArrayOf(31, if ((gy % 4 == 0 && gy % 100 != 0) || (gy % 400 == 0)) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+        var gd = days + 1
+        val salA = intArrayOf(0, 31, if ((gy % 4 == 0 && gy % 100 != 0) || (gy % 400 == 0)) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
         var gm = 0
-        while (gm < 12 && days >= gDaysInMonth[gm]) {
-            days -= gDaysInMonth[gm]
+        while (gm < 13 && gd > salA[gm]) {
+            gd -= salA[gm]
             gm++
         }
-        val gd = days + 1
 
         val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
-        cal.set(gy, gm, gd, hour, min, sec)
+        cal.set(gy, gm - 1, gd, hour, min, sec)
         cal.set(Calendar.MILLISECOND, 0)
         return cal
     }
