@@ -355,11 +355,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     fun updateTransactionCategorization(
         txId: Long,
         category: String,
-        subCategory: String,
-        notes: String,
-        isIgnored: Boolean,
+        subCategory: String = "",
+        notes: String = "",
+        isIgnored: Boolean = false,
         isBusiness: Boolean = false,
-        items: List<TransactionItem>
+        items: List<TransactionItem> = emptyList()
     ) {
         val db = writableDatabase
         val cv = ContentValues().apply {

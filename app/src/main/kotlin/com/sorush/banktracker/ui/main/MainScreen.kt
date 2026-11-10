@@ -355,12 +355,13 @@ fun MonthlyDashboardTab(db: DatabaseHelper, refreshTrigger: Int = 0) {
                                         OutlinedButton(
                                             onClick = {
                                                 db.updateTransactionCategorization(
-                                                    pTx.id,
-                                                    "نادیده گرفته شده",
-                                                    "",
-                                                    "نادیده گرفته شد",
-                                                    true,
-                                                    emptyList()
+                                                    txId = pTx.id,
+                                                    category = "نادیده گرفته شده",
+                                                    subCategory = "",
+                                                    notes = "نادیده گرفته شد",
+                                                    isIgnored = true,
+                                                    isBusiness = false,
+                                                    items = emptyList()
                                                 )
                                                 com.sorush.banktracker.receiver.SmsReceiver.cancelNotification(context, pTx.id.toInt())
                                                 refresh()
