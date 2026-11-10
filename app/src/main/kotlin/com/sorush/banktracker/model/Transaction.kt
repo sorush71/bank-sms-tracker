@@ -10,10 +10,32 @@ data class Transaction(
     val amountToman: Long,
     val type: TransactionType,
     val category: String,
+    val subCategory: String = "",
     val bankName: String,
     val timestamp: Long,
     val rawMessage: String,
-    val isIgnored: Boolean = false
+    val isIgnored: Boolean = false,
+    val isPending: Boolean = false,
+    val notes: String = "",
+    val items: List<TransactionItem> = emptyList()
+)
+
+data class TransactionItem(
+    val id: Long = 0,
+    val transactionId: Long = 0,
+    val title: String,
+    val amountToman: Long,
+    val subCategory: String = "",
+    val notes: String = ""
+)
+
+data class CategoryNode(
+    val id: Long = 0,
+    val parentId: Long? = null,
+    val name: String,
+    val type: TransactionType = TransactionType.EXPENSE,
+    val isCustom: Boolean = false,
+    val subCategories: List<CategoryNode> = emptyList()
 )
 
 data class Category(

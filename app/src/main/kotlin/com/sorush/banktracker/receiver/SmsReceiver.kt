@@ -20,9 +20,32 @@ class SmsReceiver : BroadcastReceiver() {
     companion object {
         const val CHANNEL_ID = "bank_transactions_channel"
         const val CHANNEL_NAME = "تراکنش‌های بانکی"
+        const val ACTION_IGNORE_TX = "com.sorush.banktracker.ACTION_IGNORE_TX"
+
+        fun cancelNotification(context: Context, notificationId: Int) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(notificationId)
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_IGNORE_TX) {
+            val txId = intent.getLongExtra("EXTRA_TX_ID", -1L)
+            if (txId != -1L) {
+                val db = DatabaseHelper.getInstance(context)
+                db.updateTransactionCategorization(
+                    txId = txId,
+                    category = "نادیده گرفته‌شده",
+                    subCategory = "",
+                    notes = "از اعلان نادیده گرفته شد",
+                    isIgnored = true,
+                    items = emptyList()
+                )
+                cancelNotification(context, txId.toInt())
+            }
+            return
+        }
+
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
 
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
@@ -45,8 +68,22 @@ class SmsReceiver : BroadcastReceiver() {
         // Parse the transaction
         val parsed = TransactionParser.parse(sender, fullBody) ?: return
 
-        // 1. Launch Overlay Dialog Activity directly
+        // Save immediately as pending categorization so it is NEVER lost even if dismissed
+        val txId = db.insertTransaction(
+            amountToman = parsed.amountToman,
+            type = parsed.type,
+            category = "در انتظار تعیین",
+            subCategory = "",
+            bankName = parsed.bankName,
+            rawMessage = parsed.rawMessage,
+            isIgnored = false,
+            isPending = true,
+            notes = ""
+        )
+
+        // 1. Launch Overlay Dialog Activity
         val dialogIntent = Intent(context, OverlayDialogActivity::class.java).apply {
+            putExtra("EXTRA_TX_ID", txId)
             putExtra("EXTRA_AMOUNT_TOMAN", parsed.amountToman)
             putExtra("EXTRA_TYPE", parsed.type.name)
             putExtra("EXTRA_BANK_NAME", parsed.bankName)
@@ -56,17 +93,22 @@ class SmsReceiver : BroadcastReceiver() {
 
         try {
             context.startActivity(dialogIntent)
-        } catch (_: Exception) {
-            // In Android 14/15, background activity launch may be blocked if overlay permission isn't granted yet.
-            // Fallback notification ensures user still gets the prompt immediately.
-        }
+        } catch (_: Exception) {}
 
-        // 2. High Priority Heads-up Notification (Fallback & Status Bar Integration)
-        showTransactionNotification(context, parsed.amountToman, parsed.type.titleFa, parsed.bankName, dialogIntent)
+        // 2. Post Persistent Notification (stays in notification drawer if popup is dismissed)
+        showPersistentTransactionNotification(
+            context = context,
+            txId = txId,
+            amountToman = parsed.amountToman,
+            typeTitle = parsed.type.titleFa,
+            bankName = parsed.bankName,
+            dialogIntent = dialogIntent
+        )
     }
 
-    private fun showTransactionNotification(
+    private fun showPersistentTransactionNotification(
         context: Context,
+        txId: Long,
         amountToman: Long,
         typeTitle: String,
         bankName: String,
@@ -79,7 +121,7 @@ class SmsReceiver : BroadcastReceiver() {
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "نمایش پاپ‌آپ و اعلان هنگام تراکنش‌های بانکی"
+                description = "نمایش پاپ‌آپ و اعلان تراکنش‌ها با امکان ثبت دیرتر"
                 enableVibration(true)
             }
             nm.createNotificationChannel(channel)
@@ -87,8 +129,20 @@ class SmsReceiver : BroadcastReceiver() {
 
         val pendingIntent = PendingIntent.getActivity(
             context,
-            System.currentTimeMillis().toInt(),
+            txId.toInt(),
             dialogIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Action: Ignore directly from notification
+        val ignoreIntent = Intent(context, SmsReceiver::class.java).apply {
+            action = ACTION_IGNORE_TX
+            putExtra("EXTRA_TX_ID", txId)
+        }
+        val ignorePendingIntent = PendingIntent.getBroadcast(
+            context,
+            (txId + 500000).toInt(),
+            ignoreIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -96,15 +150,22 @@ class SmsReceiver : BroadcastReceiver() {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("$typeTitle $bankName")
-            .setContentText("مبلغ: $formattedAmount تومان - برای تعیین دسته‌بندی ضربه بزنید")
+            .setContentTitle("💳 $typeTitle جدید $bankName: $formattedAmount تومان")
+            .setContentText("این تراکنش نیاز به تعیین دسته‌بندی دارد (ضربه بزنید)")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "مبلغ: $formattedAmount تومان\nبانک: $bankName\n" +
+                    "اگر در لحظه دریافت فرصت نکردید، می‌توانید همینجا دسته و جزئیات خرید را مشخص کنید."
+                )
+            )
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setFullScreenIntent(pendingIntent, true) // Launches overlay immediately on screen
             .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_input_add, "تعیین دسته‌بندی", pendingIntent)
+            .addAction(android.R.drawable.ic_delete, "نادیده گرفتن", ignorePendingIntent)
+            .setOngoing(false) // Dismissible by user if swiped, but stays until acted upon or cleared
             .setAutoCancel(true)
             .build()
 
-        nm.notify((System.currentTimeMillis() % 100000).toInt(), notification)
+        nm.notify(txId.toInt(), notification)
     }
 }

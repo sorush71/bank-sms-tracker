@@ -4,21 +4,19 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import com.sorush.banktracker.model.Category
-import com.sorush.banktracker.model.CategoryExpense
-import com.sorush.banktracker.model.MonthlySummary
-import com.sorush.banktracker.model.Transaction
-import com.sorush.banktracker.model.TransactionType
+import com.sorush.banktracker.model.*
 import com.sorush.banktracker.util.JalaliCalendar
 
 class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
 
     companion object {
         const val DATABASE_NAME = "bank_tracker.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
 
         private const val TABLE_TRANSACTIONS = "transactions"
-        private const val TABLE_CATEGORIES = "categories"
+        private const val TABLE_TRANSACTION_ITEMS = "transaction_items"
+        private const val TABLE_CATEGORIES_TREE = "categories_tree"
+        private const val TABLE_CATEGORIES_SUGGEST = "categories_suggest"
         private const val TABLE_WHITELIST = "bank_whitelist"
         private const val TABLE_INSTALLMENTS = "installments"
 
@@ -39,15 +37,40 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 amount_toman INTEGER NOT NULL,
                 type TEXT NOT NULL,
                 category TEXT NOT NULL,
+                sub_category TEXT NOT NULL DEFAULT '',
                 bank_name TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 raw_message TEXT NOT NULL,
-                is_ignored INTEGER NOT NULL DEFAULT 0
+                is_ignored INTEGER NOT NULL DEFAULT 0,
+                is_pending INTEGER NOT NULL DEFAULT 0,
+                notes TEXT NOT NULL DEFAULT ''
             )
         """.trimIndent())
 
         db.execSQL("""
-            CREATE TABLE $TABLE_CATEGORIES (
+            CREATE TABLE $TABLE_TRANSACTION_ITEMS (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                amount_toman INTEGER NOT NULL,
+                sub_category TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (transaction_id) REFERENCES $TABLE_TRANSACTIONS (id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE $TABLE_CATEGORIES_TREE (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER DEFAULT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                is_custom INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE $TABLE_CATEGORIES_SUGGEST (
                 name TEXT PRIMARY KEY,
                 usage_count INTEGER NOT NULL DEFAULT 1,
                 last_used_at INTEGER NOT NULL
@@ -62,24 +85,16 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent())
 
-        // Prepopulate default bank whitelist
+        createInstallmentsTable(db)
+
+        // Seed Data
         insertDefaultWhitelist(db, "ResalatBank", "بانک قرض‌الحسنه رسالت")
         insertDefaultWhitelist(db, "B.Pasargad", "بانک پاسارگاد")
         insertDefaultWhitelist(db, "Bank Mellat", "بانک ملت")
         insertDefaultWhitelist(db, "Bank Melli", "بانک ملی")
 
-        // Prepopulate standard categories
-        insertInitialCategory(db, "سیگار")
-        insertInitialCategory(db, "مواد غذایی")
-        insertInitialCategory(db, "قسط و وام")
-        insertInitialCategory(db, "حقوق و دریافتی")
-        insertInitialCategory(db, "کافه و رستوران")
-        insertInitialCategory(db, "تاکسی و حمل‌ونقل")
-        insertInitialCategory(db, "خرید اینترنتی")
-        insertInitialCategory(db, "اجاره و قبوض")
+        seedCategoryTree(db)
 
-        // Create installments table
-        createInstallmentsTable(db)
         insertInitialInstallment(db, "وام قرض‌الحسنه", "بانک قرض‌الحسنه رسالت", 2600000L, 14, 24, 6)
         insertInitialInstallment(db, "قسط تسهیلات", "بانک پاسارگاد", 870000L, 25, 36, 10)
     }
@@ -97,6 +112,115 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 is_active INTEGER NOT NULL DEFAULT 1
             )
         """.trimIndent())
+    }
+
+    private fun seedCategoryTree(db: SQLiteDatabase) {
+        // Expense Tree (Parmis style)
+        val foodId = addParentCat(db, "خوراک و سوپرمارکت", "EXPENSE")
+        addSubCat(db, foodId, "سوپرمارکت و خواربار", "EXPENSE")
+        addSubCat(db, foodId, "میوه و سبزیجات", "EXPENSE")
+        addSubCat(db, foodId, "پروتئینی (گوشت و مرغ)", "EXPENSE")
+        addSubCat(db, foodId, "نان و غلات", "EXPENSE")
+        addSubCat(db, foodId, "کافه و رستوران", "EXPENSE")
+        addSubCat(db, foodId, "دخانیات و سیگار", "EXPENSE")
+
+        val transportId = addParentCat(db, "حمل و نقل و خودرو", "EXPENSE")
+        addSubCat(db, transportId, "اسنپ و تاکسی", "EXPENSE")
+        addSubCat(db, transportId, "بنزین و گاز", "EXPENSE")
+        addSubCat(db, transportId, "تعمیرات و سرویس", "EXPENSE")
+        addSubCat(db, transportId, "بیمه و عوارض", "EXPENSE")
+
+        val houseId = addParentCat(db, "مسکن و قبوض", "EXPENSE")
+        addSubCat(db, houseId, "اجاره‌بها", "EXPENSE")
+        addSubCat(db, houseId, "شارژ ساختمان", "EXPENSE")
+        addSubCat(db, houseId, "قبوض خدماتی", "EXPENSE")
+        addSubCat(db, houseId, "تعمیرات و وسایل منزل", "EXPENSE")
+
+        val healthId = addParentCat(db, "بهداشت و درمان", "EXPENSE")
+        addSubCat(db, healthId, "لوازم بهداشتی و آرایشی", "EXPENSE")
+        addSubCat(db, healthId, "دارو و درمانگاه", "EXPENSE")
+        addSubCat(db, healthId, "پزشک و دندانپزشکی", "EXPENSE")
+
+        val clothesId = addParentCat(db, "پوشاک و لوازم شخصی", "EXPENSE")
+        addSubCat(db, clothesId, "لباس و پوشاک", "EXPENSE")
+        addSubCat(db, clothesId, "کیف و کفش", "EXPENSE")
+        addSubCat(db, clothesId, "اکسسوری و وسایل شخصی", "EXPENSE")
+
+        val loanId = addParentCat(db, "اقساط و امور مالی", "EXPENSE")
+        addSubCat(db, loanId, "قسط وام و تسهیلات", "EXPENSE")
+        addSubCat(db, loanId, "کارمزد بانکی", "EXPENSE")
+        addSubCat(db, loanId, "پس‌انداز و بیمه عمر", "EXPENSE")
+
+        val netId = addParentCat(db, "ارتباطات و اینترنت", "EXPENSE")
+        addSubCat(db, netId, "بسته اینترنت و شارژ", "EXPENSE")
+        addSubCat(db, netId, "اشتراک‌ها و نرم‌افزار", "EXPENSE")
+
+        val funId = addParentCat(db, "تفریح و آموزش", "EXPENSE")
+        addSubCat(db, funId, "آموزش و کتاب", "EXPENSE")
+        addSubCat(db, funId, "سفر و اقامت", "EXPENSE")
+        addSubCat(db, funId, "هدیه و متفرقه", "EXPENSE")
+
+        // Income Tree
+        val salaryId = addParentCat(db, "حقوق و دستمزد", "INCOME")
+        addSubCat(db, salaryId, "حقوق ماهانه", "INCOME")
+        addSubCat(db, salaryId, "اضافه‌کاری و پاداش", "INCOME")
+
+        val freelanceId = addParentCat(db, "درآمد آزاد", "INCOME")
+        addSubCat(db, freelanceId, "پروژه‌ای و فریلنسری", "INCOME")
+        addSubCat(db, freelanceId, "فروش وسایل", "INCOME")
+
+        val investId = addParentCat(db, "سود و سرمایه‌گذاری", "INCOME")
+        addSubCat(db, investId, "سود سپرده بانکی", "INCOME")
+        addSubCat(db, investId, "سود سهام و ارز", "INCOME")
+
+        val otherIncId = addParentCat(db, "درآمدهای متفرقه", "INCOME")
+        addSubCat(db, otherIncId, "بازپرداخت طلب", "INCOME")
+        addSubCat(db, otherIncId, "هدیه نقدی", "INCOME")
+
+        // Seed initial suggestions
+        insertInitialSuggestion(db, "سیگار")
+        insertInitialSuggestion(db, "سوپرمارکت و خواربار")
+        insertInitialSuggestion(db, "قسط وام و تسهیلات")
+        insertInitialSuggestion(db, "حقوق ماهانه")
+        insertInitialSuggestion(db, "اسنپ و تاکسی")
+    }
+
+    private fun addParentCat(db: SQLiteDatabase, name: String, type: String): Long {
+        val cv = ContentValues().apply {
+            putNull("parent_id")
+            put("name", name)
+            put("type", type)
+            put("is_custom", 0)
+        }
+        return db.insert(TABLE_CATEGORIES_TREE, null, cv)
+    }
+
+    private fun addSubCat(db: SQLiteDatabase, parentId: Long, name: String, type: String): Long {
+        val cv = ContentValues().apply {
+            put("parent_id", parentId)
+            put("name", name)
+            put("type", type)
+            put("is_custom", 0)
+        }
+        return db.insert(TABLE_CATEGORIES_TREE, null, cv)
+    }
+
+    private fun insertDefaultWhitelist(db: SQLiteDatabase, senderId: String, name: String) {
+        val cv = ContentValues().apply {
+            put("sender_id", senderId)
+            put("display_name", name)
+            put("is_enabled", 1)
+        }
+        db.insertWithOnConflict(TABLE_WHITELIST, null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    private fun insertInitialSuggestion(db: SQLiteDatabase, name: String) {
+        val cv = ContentValues().apply {
+            put("name", name)
+            put("usage_count", 1)
+            put("last_used_at", System.currentTimeMillis())
+        }
+        db.insertWithOnConflict(TABLE_CATEGORIES_SUGGEST, null, cv, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
     private fun insertInitialInstallment(
@@ -120,86 +244,208 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.insert(TABLE_INSTALLMENTS, null, cv)
     }
 
-    private fun insertDefaultWhitelist(db: SQLiteDatabase, senderId: String, name: String) {
-        val cv = ContentValues().apply {
-            put("sender_id", senderId)
-            put("display_name", name)
-            put("is_enabled", 1)
-        }
-        db.insertWithOnConflict(TABLE_WHITELIST, null, cv, SQLiteDatabase.CONFLICT_IGNORE)
-    }
-
-    private fun insertInitialCategory(db: SQLiteDatabase, name: String) {
-        val cv = ContentValues().apply {
-            put("name", name)
-            put("usage_count", 0)
-            put("last_used_at", System.currentTimeMillis())
-        }
-        db.insertWithOnConflict(TABLE_CATEGORIES, null, cv, SQLiteDatabase.CONFLICT_IGNORE)
-    }
-
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             createInstallmentsTable(db)
-            insertInitialInstallment(db, "وام قرض‌الحسنه", "بانک قرض‌الحسنه رسالت", 2600000L, 14, 24, 6)
-            insertInitialInstallment(db, "قسط تسهیلات", "بانک پاسارگاد", 870000L, 25, 36, 10)
+        }
+        if (oldVersion < 3) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN sub_category TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+            } catch (_: Exception) {}
+
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS $TABLE_TRANSACTION_ITEMS (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    amount_toman INTEGER NOT NULL,
+                    sub_category TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT ''
+                )
+            """.trimIndent())
+
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS $TABLE_CATEGORIES_TREE (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    parent_id INTEGER DEFAULT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    is_custom INTEGER NOT NULL DEFAULT 0
+                )
+            """.trimIndent())
+
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS $TABLE_CATEGORIES_SUGGEST (
+                    name TEXT PRIMARY KEY,
+                    usage_count INTEGER NOT NULL DEFAULT 1,
+                    last_used_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+
+            seedCategoryTree(db)
         }
     }
 
-    // --- Transactions ---
+    // --- Transactions & Split Items ---
 
     fun insertTransaction(
         amountToman: Long,
         type: TransactionType,
         category: String,
+        subCategory: String = "",
         bankName: String,
         timestamp: Long = System.currentTimeMillis(),
         rawMessage: String = "",
-        isIgnored: Boolean = false
+        isIgnored: Boolean = false,
+        isPending: Boolean = false,
+        notes: String = "",
+        items: List<TransactionItem> = emptyList()
     ): Long {
         val db = writableDatabase
         val cv = ContentValues().apply {
             put("amount_toman", amountToman)
             put("type", type.name)
             put("category", category)
+            put("sub_category", subCategory)
             put("bank_name", bankName)
             put("timestamp", timestamp)
             put("raw_message", rawMessage)
             put("is_ignored", if (isIgnored) 1 else 0)
+            put("is_pending", if (isPending) 1 else 0)
+            put("notes", notes)
         }
         val id = db.insert(TABLE_TRANSACTIONS, null, cv)
 
-        if (!isIgnored && category.isNotBlank()) {
-            recordCategoryUsage(category)
+        if (items.isNotEmpty()) {
+            insertItemsForTransaction(db, id, items)
+        }
+
+        if (!isIgnored && category.isNotBlank() && !isPending) {
+            recordCategoryUsage(if (subCategory.isNotBlank()) subCategory else category)
         }
         return id
     }
 
-    fun getAllTransactions(limit: Int = 100): List<Transaction> {
+    private fun insertItemsForTransaction(db: SQLiteDatabase, txId: Long, items: List<TransactionItem>) {
+        for (item in items) {
+            val cv = ContentValues().apply {
+                put("transaction_id", txId)
+                put("title", item.title.trim())
+                put("amount_toman", item.amountToman)
+                put("sub_category", item.subCategory.trim())
+                put("notes", item.notes.trim())
+            }
+            db.insert(TABLE_TRANSACTION_ITEMS, null, cv)
+            if (item.title.isNotBlank()) {
+                recordCategoryUsage(item.title)
+            }
+        }
+    }
+
+    fun updateTransactionCategorization(
+        txId: Long,
+        category: String,
+        subCategory: String,
+        notes: String,
+        isIgnored: Boolean,
+        items: List<TransactionItem>
+    ) {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("category", category)
+            put("sub_category", subCategory)
+            put("notes", notes)
+            put("is_ignored", if (isIgnored) 1 else 0)
+            put("is_pending", 0)
+        }
+        db.update(TABLE_TRANSACTIONS, cv, "id = ?", arrayOf(txId.toString()))
+
+        // Replace items
+        db.delete(TABLE_TRANSACTION_ITEMS, "transaction_id = ?", arrayOf(txId.toString()))
+        if (items.isNotEmpty()) {
+            insertItemsForTransaction(db, txId, items)
+        }
+
+        if (!isIgnored) {
+            recordCategoryUsage(if (subCategory.isNotBlank()) subCategory else category)
+        }
+    }
+
+    fun getPendingTransactions(): List<Transaction> {
         val list = mutableListOf<Transaction>()
         val db = readableDatabase
         val cursor = db.rawQuery(
-            "SELECT id, amount_toman, type, category, bank_name, timestamp, raw_message, is_ignored " +
+            "SELECT id, amount_toman, type, category, sub_category, bank_name, timestamp, raw_message, is_ignored, is_pending, notes " +
+            "FROM $TABLE_TRANSACTIONS WHERE is_pending = 1 AND is_ignored = 0 ORDER BY timestamp DESC",
+            null
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                list.add(cursorToTransaction(it))
+            }
+        }
+        return list
+    }
+
+    fun getAllTransactions(limit: Int = 200): List<Transaction> {
+        val list = mutableListOf<Transaction>()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT id, amount_toman, type, category, sub_category, bank_name, timestamp, raw_message, is_ignored, is_pending, notes " +
             "FROM $TABLE_TRANSACTIONS ORDER BY timestamp DESC LIMIT ?",
             arrayOf(limit.toString())
         )
         cursor.use {
             while (it.moveToNext()) {
+                val tx = cursorToTransaction(it)
+                val items = getItemsForTransaction(tx.id)
+                list.add(tx.copy(items = items))
+            }
+        }
+        return list
+    }
+
+    fun getItemsForTransaction(txId: Long): List<TransactionItem> {
+        val list = mutableListOf<TransactionItem>()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT id, transaction_id, title, amount_toman, sub_category, notes " +
+            "FROM $TABLE_TRANSACTION_ITEMS WHERE transaction_id = ?",
+            arrayOf(txId.toString())
+        )
+        cursor.use {
+            while (it.moveToNext()) {
                 list.add(
-                    Transaction(
+                    TransactionItem(
                         id = it.getLong(0),
-                        amountToman = it.getLong(1),
-                        type = TransactionType.valueOf(it.getString(2)),
-                        category = it.getString(3),
-                        bankName = it.getString(4),
-                        timestamp = it.getLong(5),
-                        rawMessage = it.getString(6),
-                        isIgnored = it.getInt(7) == 1
+                        transactionId = it.getLong(1),
+                        title = it.getString(2),
+                        amountToman = it.getLong(3),
+                        subCategory = it.getString(4),
+                        notes = it.getString(5)
                     )
                 )
             }
         }
         return list
+    }
+
+    private fun cursorToTransaction(c: android.database.Cursor): Transaction {
+        return Transaction(
+            id = c.getLong(0),
+            amountToman = c.getLong(1),
+            type = TransactionType.valueOf(c.getString(2)),
+            category = c.getString(3),
+            subCategory = c.getString(4),
+            bankName = c.getString(5),
+            timestamp = c.getLong(6),
+            rawMessage = c.getString(7),
+            isIgnored = c.getInt(8) == 1,
+            isPending = c.getInt(9) == 1,
+            notes = c.getString(10)
+        )
     }
 
     fun getMonthlySummary(jYear: Int, jMonth: Int): MonthlySummary {
@@ -209,12 +455,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         var totalDeposit = 0L
         var totalExpense = 0L
 
-        // Get total deposit & expense (excluding ignored)
         val totalCursor = db.rawQuery(
             """
             SELECT type, SUM(amount_toman) 
             FROM $TABLE_TRANSACTIONS 
-            WHERE is_ignored = 0 AND timestamp BETWEEN ? AND ?
+            WHERE is_ignored = 0 AND is_pending = 0 AND timestamp BETWEEN ? AND ?
             GROUP BY type
             """.trimIndent(),
             arrayOf(startTime.toString(), endTime.toString())
@@ -231,13 +476,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             }
         }
 
-        // Category breakdown for expenses
         val categoryList = mutableListOf<CategoryExpense>()
         val catCursor = db.rawQuery(
             """
             SELECT category, SUM(amount_toman), COUNT(id)
             FROM $TABLE_TRANSACTIONS 
-            WHERE is_ignored = 0 AND type = 'EXPENSE' AND timestamp BETWEEN ? AND ?
+            WHERE is_ignored = 0 AND is_pending = 0 AND type = 'EXPENSE' AND timestamp BETWEEN ? AND ?
             GROUP BY category
             ORDER BY SUM(amount_toman) DESC
             """.trimIndent(),
@@ -265,7 +509,72 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         )
     }
 
-    // --- Categories & Auto-suggest ---
+    // --- Category Tree Management (Parmis & Custom) ---
+
+    fun getCategoryTree(type: TransactionType): List<CategoryNode> {
+        val db = readableDatabase
+        val parents = mutableListOf<CategoryNode>()
+
+        val parentCursor = db.rawQuery(
+            "SELECT id, name, is_custom FROM $TABLE_CATEGORIES_TREE WHERE parent_id IS NULL AND type = ? ORDER BY id ASC",
+            arrayOf(type.name)
+        )
+        parentCursor.use {
+            while (it.moveToNext()) {
+                val pId = it.getLong(0)
+                val pName = it.getString(1)
+                val pCustom = it.getInt(2) == 1
+
+                val subs = mutableListOf<CategoryNode>()
+                val subCursor = db.rawQuery(
+                    "SELECT id, name, is_custom FROM $TABLE_CATEGORIES_TREE WHERE parent_id = ? ORDER BY id ASC",
+                    arrayOf(pId.toString())
+                )
+                subCursor.use { sc ->
+                    while (sc.moveToNext()) {
+                        subs.add(
+                            CategoryNode(
+                                id = sc.getLong(0),
+                                parentId = pId,
+                                name = sc.getString(1),
+                                type = type,
+                                isCustom = sc.getInt(2) == 1
+                            )
+                        )
+                    }
+                }
+                parents.add(CategoryNode(id = pId, parentId = null, name = pName, type = type, isCustom = pCustom, subCategories = subs))
+            }
+        }
+        return parents
+    }
+
+    fun addCategory(name: String, parentId: Long?, type: TransactionType): Long {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            if (parentId != null) put("parent_id", parentId) else putNull("parent_id")
+            put("name", name.trim())
+            put("type", type.name)
+            put("is_custom", 1)
+        }
+        val id = db.insert(TABLE_CATEGORIES_TREE, null, cv)
+        recordCategoryUsage(name.trim())
+        return id
+    }
+
+    fun deleteCategory(id: Long) {
+        val db = writableDatabase
+        db.delete(TABLE_CATEGORIES_TREE, "id = ? OR parent_id = ?", arrayOf(id.toString(), id.toString()))
+    }
+
+    fun updateCategory(id: Long, newName: String) {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("name", newName.trim())
+        }
+        db.update(TABLE_CATEGORIES_TREE, cv, "id = ?", arrayOf(id.toString()))
+        recordCategoryUsage(newName.trim())
+    }
 
     fun recordCategoryUsage(categoryName: String) {
         val cleanName = categoryName.trim()
@@ -274,7 +583,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val db = writableDatabase
         db.execSQL(
             """
-            INSERT INTO $TABLE_CATEGORIES (name, usage_count, last_used_at)
+            INSERT INTO $TABLE_CATEGORIES_SUGGEST (name, usage_count, last_used_at)
             VALUES (?, 1, ?)
             ON CONFLICT(name) DO UPDATE SET
                 usage_count = usage_count + 1,
@@ -291,10 +600,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val args: Array<String>
 
         if (prefix.isBlank()) {
-            query = "SELECT name FROM $TABLE_CATEGORIES ORDER BY usage_count DESC, last_used_at DESC LIMIT ?"
+            query = "SELECT name FROM $TABLE_CATEGORIES_SUGGEST ORDER BY usage_count DESC, last_used_at DESC LIMIT ?"
             args = arrayOf(limit.toString())
         } else {
-            query = "SELECT name FROM $TABLE_CATEGORIES WHERE name LIKE ? ORDER BY usage_count DESC, last_used_at DESC LIMIT ?"
+            query = "SELECT name FROM $TABLE_CATEGORIES_SUGGEST WHERE name LIKE ? ORDER BY usage_count DESC, last_used_at DESC LIMIT ?"
             args = arrayOf("$prefix%", limit.toString())
         }
 
@@ -307,7 +616,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return list
     }
 
-    // --- Bank Whitelist ---
+    // --- Whitelist & Installments ---
 
     fun getWhitelistedSenders(): List<String> {
         val list = mutableListOf<String>()
@@ -357,8 +666,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return list
     }
 
-    // --- Installments & Debt Reminders ---
-
     fun insertInstallment(
         title: String,
         bankName: String,
@@ -380,8 +687,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return db.insert(TABLE_INSTALLMENTS, null, cv)
     }
 
-    fun getAllInstallments(): List<com.sorush.banktracker.model.Installment> {
-        val list = mutableListOf<com.sorush.banktracker.model.Installment>()
+    fun getAllInstallments(): List<Installment> {
+        val list = mutableListOf<Installment>()
         val db = readableDatabase
         val cursor = db.rawQuery(
             "SELECT id, title, bank_name, amount_toman, due_day, total_months, paid_months, is_active " +
@@ -391,7 +698,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         cursor.use {
             while (it.moveToNext()) {
                 list.add(
-                    com.sorush.banktracker.model.Installment(
+                    Installment(
                         id = it.getLong(0),
                         title = it.getString(1),
                         bankName = it.getString(2),
@@ -420,12 +727,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.delete(TABLE_INSTALLMENTS, "id = ?", arrayOf(id.toString()))
     }
 
-    fun getInstallmentSummary(): com.sorush.banktracker.model.InstallmentSummary {
+    fun getInstallmentSummary(): InstallmentSummary {
         val all = getAllInstallments()
         var totalMonthly = 0L
         var totalRemainingDebt = 0L
 
-        val bankMap = mutableMapOf<String, Pair<Long, Int>>() // bank -> (monthlyTotal, count)
+        val bankMap = mutableMapOf<String, Pair<Long, Int>>()
 
         for (inst in all) {
             totalMonthly += inst.amountToman
@@ -436,14 +743,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         }
 
         val bankBreakdown = bankMap.map { (bank, pair) ->
-            com.sorush.banktracker.model.BankInstallmentTotal(
+            BankInstallmentTotal(
                 bankName = bank,
                 monthlyTotalToman = pair.first,
                 count = pair.second
             )
         }.sortedByDescending { it.monthlyTotalToman }
 
-        return com.sorush.banktracker.model.InstallmentSummary(
+        return InstallmentSummary(
             totalMonthlyAmountToman = totalMonthly,
             totalRemainingDebtToman = totalRemainingDebt,
             activeCount = all.size,

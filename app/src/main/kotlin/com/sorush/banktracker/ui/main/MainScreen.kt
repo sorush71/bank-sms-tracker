@@ -31,8 +31,10 @@ import androidx.core.content.ContextCompat
 import com.sorush.banktracker.BuildConfig
 import com.sorush.banktracker.data.DatabaseHelper
 import com.sorush.banktracker.model.CategoryExpense
+import com.sorush.banktracker.model.CategoryNode
 import com.sorush.banktracker.model.MonthlySummary
 import com.sorush.banktracker.model.Transaction
+import com.sorush.banktracker.model.TransactionItem
 import com.sorush.banktracker.model.TransactionType
 import com.sorush.banktracker.updater.AppUpdater
 import com.sorush.banktracker.updater.UpdateInfo
@@ -183,14 +185,17 @@ fun MainScreen() {
 
 @Composable
 fun MonthlyDashboardTab(db: DatabaseHelper) {
+    val context = LocalContext.current
     val now = remember { JalaliCalendar.now() }
     var currentYear by remember { mutableIntStateOf(now.year) }
     var currentMonth by remember { mutableIntStateOf(now.month) }
 
     var summary by remember { mutableStateOf<MonthlySummary?>(null) }
+    var pendingTransactions by remember { mutableStateOf(listOf<Transaction>()) }
 
     fun refresh() {
         summary = db.getMonthlySummary(currentYear, currentMonth)
+        pendingTransactions = db.getPendingTransactions()
     }
 
     LaunchedEffect(currentYear, currentMonth) {
@@ -203,6 +208,108 @@ fun MonthlyDashboardTab(db: DatabaseHelper) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Pending Transactions Card
+        if (pendingTransactions.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFB300))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🔔 ${pendingTransactions.size} تراکنش در انتظار تعیین دسته‌بندی",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = Color(0xFFE65100)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "این تراکنش‌ها ذخیره شدند تا سر فرصت دسته‌بندی یا تفکیک اقلام شوند:",
+                            fontSize = 11.sp,
+                            color = Color(0xFF6D4C41)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        pendingTransactions.forEach { pTx ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "${pTx.bankName} (${if (pTx.type == TransactionType.DEPOSIT) "واریز" else "برداشت"})",
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 12.sp
+                                        )
+                                        Text(
+                                            text = "${NumberFormat.getNumberInstance(Locale.US).format(pTx.amountToman)} تومان",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = if (pTx.type == TransactionType.DEPOSIT) Color(0xFF2E7D32) else Color(0xFFC62828)
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Button(
+                                            onClick = {
+                                                val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
+                                                    putExtra("EXTRA_TX_ID", pTx.id)
+                                                    putExtra("EXTRA_AMOUNT_TOMAN", pTx.amountToman)
+                                                    putExtra("EXTRA_TYPE", pTx.type.name)
+                                                    putExtra("EXTRA_BANK_NAME", pTx.bankName)
+                                                    putExtra("EXTRA_RAW_MESSAGE", pTx.rawMessage)
+                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                context.startActivity(intent)
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("تعیین دسته", fontSize = 11.sp)
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                db.updateTransactionCategorization(
+                                                    pTx.id,
+                                                    "نادیده گرفته شده",
+                                                    "",
+                                                    "نادیده گرفته شد",
+                                                    true,
+                                                    emptyList()
+                                                )
+                                                com.sorush.banktracker.receiver.SmsReceiver.cancelNotification(context, pTx.id.toInt())
+                                                refresh()
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("نادیده", fontSize = 11.sp, color = Color.Gray)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Month Switcher Header
         item {
             Card(
@@ -825,41 +932,117 @@ fun TransactionRow(tx: Transaction) {
         "${j.formatted()} - ${sdf.format(Date(tx.timestamp))}"
     }
 
+    var isExpanded by remember { mutableStateOf(false) }
+
     val isDeposit = tx.type == TransactionType.DEPOSIT
     val color = if (tx.isIgnored) Color.Gray else if (isDeposit) Color(0xFF2E7D32) else Color(0xFFC62828)
     val sign = if (isDeposit) "+" else "-"
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { if (tx.items.isNotEmpty()) isExpanded = !isExpanded },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = if (tx.isIgnored) "نادیده گرفته شده" else tx.category,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-                Text(
-                    text = "${tx.bankName} | $date",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    val titleDisplay = when {
+                        tx.isIgnored -> "نادیده گرفته شده"
+                        tx.subCategory.isNotBlank() && tx.subCategory != tx.category -> "${tx.category} > ${tx.subCategory}"
+                        else -> tx.category
+                    }
+                    Text(
+                        text = titleDisplay,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = "${tx.bankName} | $date",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (tx.notes.isNotBlank()) {
+                        Text(
+                            text = "📝 ${tx.notes}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "$sign${NumberFormat.getNumberInstance(Locale.US).format(tx.amountToman)} تومان",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                        color = color
+                    )
+                    if (tx.items.isNotEmpty()) {
+                        Text(
+                            text = "🛒 فاکتور (${tx.items.size} قلم) ${if (isExpanded) "▲" else "▼"}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
             }
 
-            Text(
-                text = "$sign${NumberFormat.getNumberInstance(Locale.US).format(tx.amountToman)} تومان",
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 15.sp,
-                color = color
-            )
+            // Expanded Split Items View
+            AnimatedVisibility(visible = isExpanded && tx.items.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "ریز اقلام فاکتور:",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    tx.items.forEach { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "• ${item.title}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                )
+                                if (item.notes.isNotBlank()) {
+                                    Text(
+                                        text = item.notes,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "${NumberFormat.getNumberInstance(Locale.US).format(item.amountToman)} ت",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1061,6 +1244,11 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
             }
         }
 
+        // Category Management Section (Parmis & Custom Categories)
+        item {
+            CategoryManagementCard(db = db)
+        }
+
         // In-App Update Section
         item {
             Card(
@@ -1126,5 +1314,251 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+fun CategoryManagementCard(db: DatabaseHelper) {
+    var selectedType by remember { mutableStateOf(TransactionType.EXPENSE) }
+    var categoryTree by remember { mutableStateOf(listOf<CategoryNode>()) }
+
+    var showAddParentDialog by remember { mutableStateOf(false) }
+    var showAddSubDialog by remember { mutableStateOf<Pair<Long, String>?>(null) } // parentId to parentName
+    var showEditDialog by remember { mutableStateOf<Pair<Long, String>?>(null) } // id to currentName
+
+    fun reload() {
+        categoryTree = db.getCategoryTree(selectedType)
+    }
+
+    LaunchedEffect(selectedType) {
+        reload()
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "🗂️ مدیریت دسته‌بندی‌ها (پارمیس و شخصی)",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp
+            )
+            Text(
+                text = "امکان تغییر نام، افزودن دسته یا زیردسته و حذف موارد:",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Type Switcher
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = selectedType == TransactionType.EXPENSE,
+                    onClick = { selectedType = TransactionType.EXPENSE },
+                    label = { Text("دسته‌های مخارج (برداشت)", fontSize = 11.sp) },
+                    modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    selected = selectedType == TransactionType.DEPOSIT,
+                    onClick = { selectedType = TransactionType.DEPOSIT },
+                    label = { Text("دسته‌های درآمد (واریز)", fontSize = 11.sp) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(
+                onClick = { showAddParentDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("+ افزودن دسته اصلی جدید (${if (selectedType == TransactionType.EXPENSE) "مخارج" else "درآمد"})", fontSize = 12.sp)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Category Tree List
+            categoryTree.forEach { parent ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = parent.name,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                if (parent.isCustom) {
+                                    Text(
+                                        text = "سفارشی",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                IconButton(onClick = { showAddSubDialog = Pair(parent.id, parent.name) }) {
+                                    Text("➕", fontSize = 12.sp)
+                                }
+                                IconButton(onClick = { showEditDialog = Pair(parent.id, parent.name) }) {
+                                    Text("✏️", fontSize = 12.sp)
+                                }
+                                IconButton(onClick = {
+                                    db.deleteCategory(parent.id)
+                                    reload()
+                                }) {
+                                    Text("🗑️", fontSize = 12.sp)
+                                }
+                            }
+                        }
+
+                        // Subcategories Chips in horizontal scrolling row
+                        if (parent.subCategories.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                items(parent.subCategories) { sub ->
+                                    SuggestionChip(
+                                        onClick = { showEditDialog = Pair(sub.id, sub.name) },
+                                        label = { Text("${sub.name} ✏️", fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "بدون زیردسته (روی ➕ بزنید تا زیردسته اضافه کنید)",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add Parent Dialog
+    if (showAddParentDialog) {
+        var newCatName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddParentDialog = false },
+            title = { Text("افزودن دسته اصلی جدید", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = newCatName,
+                    onValueChange = { newCatName = it },
+                    label = { Text("نام دسته اصلی") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newCatName.isNotBlank()) {
+                        db.addCategory(newCatName, null, selectedType)
+                        showAddParentDialog = false
+                        reload()
+                    }
+                }) {
+                    Text("افزودن")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showAddParentDialog = false }) {
+                    Text("انصراف")
+                }
+            }
+        )
+    }
+
+    // Add Subcategory Dialog
+    showAddSubDialog?.let { (parentId, parentName) ->
+        var newSubName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddSubDialog = null },
+            title = { Text("افزودن زیردسته به «$parentName»", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = newSubName,
+                    onValueChange = { newSubName = it },
+                    label = { Text("نام زیردسته (مثلاً: سیگار، ماست، بنزین)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newSubName.isNotBlank()) {
+                        db.addCategory(newSubName, parentId, selectedType)
+                        showAddSubDialog = null
+                        reload()
+                    }
+                }) {
+                    Text("افزودن")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showAddSubDialog = null }) {
+                    Text("انصراف")
+                }
+            }
+        )
+    }
+
+    // Edit Category Dialog
+    showEditDialog?.let { (catId, currentName) ->
+        var editName by remember { mutableStateOf(currentName) }
+        AlertDialog(
+            onDismissRequest = { showEditDialog = null },
+            title = { Text("ویرایش نام دسته/زیردسته", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = editName,
+                    onValueChange = { editName = it },
+                    label = { Text("نام جدید") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (editName.isNotBlank()) {
+                        db.updateCategory(catId, editName)
+                        showEditDialog = null
+                        reload()
+                    }
+                }) {
+                    Text("ذخیره تغییرات")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showEditDialog = null }) {
+                    Text("انصراف")
+                }
+            }
+        )
     }
 }
