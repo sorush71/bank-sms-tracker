@@ -11,13 +11,26 @@ android {
     applicationId = "com.sorush.banktracker"
     minSdk = 26
     targetSdk = 35
-    versionCode = 9
-    versionName = "1.0.8"
+    versionCode = 10
+    versionName = "1.0.9"
+  }
+
+  signingConfigs {
+    create("release") {
+      storeFile = file("${rootDir}/signing/banktracker.jks")
+      storePassword = "banktracker123"
+      keyAlias = "banktracker"
+      keyPassword = "banktracker123"
+    }
   }
 
   buildTypes {
+    debug {
+      signingConfig = signingConfigs.getByName("release")
+    }
     release {
       isMinifyEnabled = false
+      signingConfig = signingConfigs.getByName("release")
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
   }
