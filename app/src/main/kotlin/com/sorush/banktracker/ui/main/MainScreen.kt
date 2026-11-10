@@ -42,6 +42,7 @@ import com.sorush.banktracker.model.TransactionItem
 import com.sorush.banktracker.model.TransactionType
 import com.sorush.banktracker.updater.AppUpdater
 import com.sorush.banktracker.updater.UpdateInfo
+import com.sorush.banktracker.util.DeviceCompatibilityHelper
 import com.sorush.banktracker.util.JalaliCalendar
 import com.sorush.banktracker.util.JalaliDate
 import com.sorush.banktracker.util.XiaomiHelper
@@ -75,6 +76,9 @@ fun MainScreen() {
     var isSetupCompleted by remember {
         mutableStateOf(prefs.getBoolean("setup_completed", false))
     }
+    var isBatteryIgnored by remember {
+        mutableStateOf(DeviceCompatibilityHelper.isBatteryOptimizationIgnored(context))
+    }
     var showSetupDialog by remember {
         mutableStateOf(!isSetupCompleted || !hasSmsPermission || !hasOverlayPermission)
     }
@@ -86,6 +90,7 @@ fun MainScreen() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasSmsPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
                 hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context) else true
+                isBatteryIgnored = DeviceCompatibilityHelper.isBatteryOptimizationIgnored(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -113,11 +118,12 @@ fun MainScreen() {
         MandatorySetupDialog(
             hasSmsPermission = hasSmsPermission,
             hasOverlayPermission = hasOverlayPermission,
+            isBatteryIgnored = isBatteryIgnored,
             onRequestSmsPermission = { requestSms() },
-            onRequestOverlayPermission = { XiaomiHelper.openOverlaySettings(context) },
-            onOpenAutostart = { XiaomiHelper.openAutostartSettings(context) },
-            onOpenBattery = { XiaomiHelper.openBatterySettings(context) },
-            onOpenPopupInBackground = { XiaomiHelper.openPopupInBackgroundSettings(context) },
+            onRequestOverlayPermission = { DeviceCompatibilityHelper.openOverlaySettings(context) },
+            onOpenAutostart = { DeviceCompatibilityHelper.openAutostartSettings(context) },
+            onRequestBatteryOptimization = { DeviceCompatibilityHelper.requestIgnoreBatteryOptimizations(context) },
+            onOpenPopupInBackground = { DeviceCompatibilityHelper.openPopupInBackgroundSettings(context) },
             onCompleteSetup = {
                 prefs.edit().putBoolean("setup_completed", true).apply()
                 isSetupCompleted = true
@@ -225,8 +231,10 @@ fun MainScreen() {
                     db = db,
                     hasSmsPermission = hasSmsPermission,
                     hasOverlayPermission = hasOverlayPermission,
+                    isBatteryIgnored = isBatteryIgnored,
                     onRequestSmsPermission = { requestSms() },
-                    onRequestOverlayPermission = { XiaomiHelper.openOverlaySettings(context) },
+                    onRequestOverlayPermission = { DeviceCompatibilityHelper.openOverlaySettings(context) },
+                    onRequestBatteryOptimization = { DeviceCompatibilityHelper.requestIgnoreBatteryOptimizations(context) },
                     onOpenSetupDialog = { showSetupDialog = true }
                 )
             }
@@ -1102,17 +1110,18 @@ fun TransactionRow(tx: Transaction) {
 fun MandatorySetupDialog(
     hasSmsPermission: Boolean,
     hasOverlayPermission: Boolean,
+    isBatteryIgnored: Boolean,
     onRequestSmsPermission: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
     onOpenAutostart: () -> Unit,
-    onOpenBattery: () -> Unit,
+    onRequestBatteryOptimization: () -> Unit,
     onOpenPopupInBackground: () -> Unit,
     onCompleteSetup: () -> Unit
 ) {
     var autostartVisited by remember { mutableStateOf(false) }
-    var batteryVisited by remember { mutableStateOf(false) }
     var popupVisited by remember { mutableStateOf(false) }
-    val isXiaomi = remember { XiaomiHelper.isXiaomiDevice() }
+    val isXiaomi = remember { DeviceCompatibilityHelper.isXiaomiDevice() }
+    val deviceBrand = remember { DeviceCompatibilityHelper.getDeviceBrandName() }
     val context = LocalContext.current
 
     AlertDialog(
@@ -1140,7 +1149,7 @@ fun MandatorySetupDialog(
             ) {
                 item {
                     Text(
-                        text = "برای اینکه برنامه بتواند بدون وقفه پیامک‌های بانکی (رسالت و پاسارگاد) را بخواند و پنجره ثبت هزینه را بلافاصله نمایش دهد، تنظیم موارد زیر الزامی است:",
+                        text = "برای اینکه برنامه بتواند بدون وقفه پیامک‌های بانکی را بخواند و پنجره ثبت هزینه را روی گوشی شما ($deviceBrand) نمایش دهد، تنظیم موارد زیر الزامی است:",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 18.sp
@@ -1237,7 +1246,52 @@ fun MandatorySetupDialog(
                     }
                 }
 
-                // ۳. شروع خودکار شیائومی
+                // ۳. باتری بدون محدودیت
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isBatteryIgnored) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "۳. باتری بدون محدودیت (No restrictions)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (isBatteryIgnored) Color(0xFF2E7D32) else Color(0xFFE65100)
+                                )
+                                if (isBatteryIgnored) {
+                                    Text("✅ فعال است", fontSize = 11.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "جلوگیری از توقف و به خواب رفتن برنامه در پس‌زمینه توسط سیستم‌عامل",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!isBatteryIgnored) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Button(
+                                    onClick = onRequestBatteryOptimization,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
+                                ) {
+                                    Text("تنظیم باتری روی بدون محدودیت", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ۴. شروع خودکار ویژه سازنده
                 item {
                     Card(
                         colors = CardDefaults.cardColors(
@@ -1252,7 +1306,7 @@ fun MandatorySetupDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "۳. شروع خودکار (Autostart)",
+                                    text = "۴. شروع خودکار در پس‌زمینه ($deviceBrand)",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp
                                 )
@@ -1262,7 +1316,7 @@ fun MandatorySetupDialog(
                             }
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = "برای روشن ماندن سرویس پس از راه‌اندازی مجدد و بستن برنامه‌ها",
+                                text = "برای ماندن دائمی سرویس در پس‌زمینه پس از بستن برنامه‌ها در گوشی $deviceBrand",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1275,51 +1329,7 @@ fun MandatorySetupDialog(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("تنظیم شروع خودکار (شیائومی)", fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-
-                // ۴. باتری بدون محدودیت
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (batteryVisited) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "۴. باتری بدون محدودیت (No restrictions)",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                                if (batteryVisited) {
-                                    Text("✔️ مشاهده شد", fontSize = 11.sp, color = Color(0xFF2E7D32))
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = "جلوگیری از غیرفعال شدن پردازش در پس‌زمینه توسط HyperOS",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            OutlinedButton(
-                                onClick = {
-                                    batteryVisited = true
-                                    onOpenBattery()
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("تنظیم باتری روی No restrictions", fontSize = 12.sp)
+                                Text("تنظیم شروع خودکار ($deviceBrand)", fontSize = 12.sp)
                             }
                         }
                     }
@@ -1341,7 +1351,7 @@ fun MandatorySetupDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "۵. مجوز پاپ‌آپ در پس‌زمینه (HyperOS)",
+                                        text = "۵. مجوز پاپ‌آپ در پس‌زمینه (HyperOS / MIUI)",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp
                                     )
@@ -1351,7 +1361,7 @@ fun MandatorySetupDialog(
                                 }
                                 Spacer(modifier = Modifier.height(3.dp))
                                 Text(
-                                    text = "گزینه Display pop-up windows while running in background",
+                                    text = "گزینه Display pop-up windows while running in background در شیائومی",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1405,8 +1415,10 @@ fun SettingsTab(
     db: DatabaseHelper,
     hasSmsPermission: Boolean,
     hasOverlayPermission: Boolean,
+    isBatteryIgnored: Boolean,
     onRequestSmsPermission: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
+    onRequestBatteryOptimization: () -> Unit,
     onOpenSetupDialog: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1557,21 +1569,23 @@ fun SettingsTab(
             }
         }
 
-        // --- 2. Permissions & Xiaomi HyperOS Status Section ---
+        // --- 2. Permissions & Device Compatibility Section ---
         item {
+            val deviceBrand = remember { DeviceCompatibilityHelper.getDeviceBrandName() }
+            val isXiaomi = remember { DeviceCompatibilityHelper.isXiaomiDevice() }
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "⚙️ تنظیمات و مجوزهای سیستم (شیائومی / HyperOS)",
+                        text = "⚙️ تنظیمات و بهینه‌سازی سیستم ($deviceBrand)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "برای اطمینان از بالا آمدن بی‌درنگ پاپ‌آپ هنگام دریافت پیامک:",
+                        text = "برای اطمینان از بالا آمدن بی‌درنگ پاپ‌آپ و عدم توقف در پس‌زمینه:",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1580,7 +1594,7 @@ fun SettingsTab(
                     // Permissions quick indicators
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Surface(
                             color = if (hasSmsPermission) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
@@ -1588,9 +1602,9 @@ fun SettingsTab(
                             modifier = Modifier.weight(1f)
                         ) {
                             Text(
-                                text = if (hasSmsPermission) "✅ پیامک: فعال" else "❌ پیامک: غیرفعال",
-                                modifier = Modifier.padding(8.dp),
-                                fontSize = 11.sp,
+                                text = if (hasSmsPermission) "✅ پیامک: فعال" else "❌ پیامک",
+                                modifier = Modifier.padding(6.dp),
+                                fontSize = 10.sp,
                                 textAlign = TextAlign.Center,
                                 color = if (hasSmsPermission) Color(0xFF2E7D32) else Color(0xFFC62828)
                             )
@@ -1601,11 +1615,24 @@ fun SettingsTab(
                             modifier = Modifier.weight(1f)
                         ) {
                             Text(
-                                text = if (hasOverlayPermission) "✅ پاپ‌آپ: فعال" else "❌ پاپ‌آپ: غیرفعال",
-                                modifier = Modifier.padding(8.dp),
-                                fontSize = 11.sp,
+                                text = if (hasOverlayPermission) "✅ پاپ‌آپ: فعال" else "❌ پاپ‌آپ",
+                                modifier = Modifier.padding(6.dp),
+                                fontSize = 10.sp,
                                 textAlign = TextAlign.Center,
                                 color = if (hasOverlayPermission) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            )
+                        }
+                        Surface(
+                            color = if (isBatteryIgnored) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (isBatteryIgnored) "✅ باتری: آزاد" else "⚠️ باتری",
+                                modifier = Modifier.padding(6.dp),
+                                fontSize = 10.sp,
+                                textAlign = TextAlign.Center,
+                                color = if (isBatteryIgnored) Color(0xFF2E7D32) else Color(0xFFC62828)
                             )
                         }
                     }
@@ -1626,25 +1653,27 @@ fun SettingsTab(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         OutlinedButton(
-                            onClick = { XiaomiHelper.openAutostartSettings(context) },
+                            onClick = { DeviceCompatibilityHelper.openAutostartSettings(context) },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text("Autostart", fontSize = 11.sp)
                         }
                         OutlinedButton(
-                            onClick = { XiaomiHelper.openBatterySettings(context) },
+                            onClick = onRequestBatteryOptimization,
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text("باتری", fontSize = 11.sp)
                         }
-                        OutlinedButton(
-                            onClick = { XiaomiHelper.openPopupInBackgroundSettings(context) },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("پاپ‌آپ پس‌زمینه", fontSize = 11.sp)
+                        if (isXiaomi) {
+                            OutlinedButton(
+                                onClick = { DeviceCompatibilityHelper.openPopupInBackgroundSettings(context) },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("پاپ‌آپ شیائومی", fontSize = 10.sp)
+                            }
                         }
                     }
                 }
