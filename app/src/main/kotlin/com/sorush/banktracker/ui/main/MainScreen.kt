@@ -613,8 +613,8 @@ fun InstallmentsTab(db: DatabaseHelper) {
 
                 OutlinedButton(
                     onClick = {
-                        com.sorush.banktracker.receiver.InstallmentReminderReceiver.checkAndTriggerReminders(context)
-                        Toast.makeText(context, "بررسی و ارسال نوتیفیکیشن انجام شد", Toast.LENGTH_SHORT).show()
+                        com.sorush.banktracker.receiver.InstallmentReminderReceiver.triggerTestReminder(context)
+                        Toast.makeText(context, "اعلان یادآور قسط ارسال شد", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp)
@@ -1093,34 +1093,36 @@ fun SettingsTab(db: DatabaseHelper, onRefreshPermissions: () -> Unit) {
                         Button(
                             onClick = {
                                 val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
-                                    putExtra("EXTRA_AMOUNT_TOMAN", 2600000L)
+                                    putExtra("EXTRA_AMOUNT_TOMAN", 260000L)
                                     putExtra("EXTRA_TYPE", TransactionType.EXPENSE.name)
                                     putExtra("EXTRA_BANK_NAME", "بانک قرض‌الحسنه رسالت")
-                                    putExtra("EXTRA_RAW_MESSAGE", "10.14423005.1\n-26,000,000\n08/14 00:23")
+                                    putExtra("EXTRA_RAW_MESSAGE", "10.14423005.1\n-2,600,000\n08/14 00:23")
                                     addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
                                 context.startActivity(intent)
                             },
                             modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
                         ) {
-                            Text("تست رسالت (-۲.۶ م)", fontSize = 11.sp)
+                            Text("🔴 تست برداشت (-۲۶۰ ه)", fontSize = 11.sp)
                         }
                         Button(
                             onClick = {
                                 val intent = android.content.Intent(context, com.sorush.banktracker.ui.popup.OverlayDialogActivity::class.java).apply {
-                                    putExtra("EXTRA_AMOUNT_TOMAN", 87000L)
-                                    putExtra("EXTRA_TYPE", TransactionType.EXPENSE.name)
+                                    putExtra("EXTRA_AMOUNT_TOMAN", 2600000L)
+                                    putExtra("EXTRA_TYPE", TransactionType.DEPOSIT.name)
                                     putExtra("EXTRA_BANK_NAME", "بانک پاسارگاد")
-                                    putExtra("EXTRA_RAW_MESSAGE", "777.888.27870097.1\n-870,000\n08/18 02:56")
+                                    putExtra("EXTRA_RAW_MESSAGE", "777.888.27870097.1\n+26,000,000\n08/18 02:56")
                                     addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
                                 context.startActivity(intent)
                             },
                             modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
                         ) {
-                            Text("تست پاسارگاد (-۸۷ ه)", fontSize = 11.sp)
+                            Text("🟢 تست واریز (+۲.۶ م)", fontSize = 11.sp)
                         }
                     }
                 }

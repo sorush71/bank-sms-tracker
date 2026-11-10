@@ -36,7 +36,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           cp app/build/outputs/apk/debug/app-debug.apk release-artifacts/BankTracker-latest.apk
-          cp app/build/outputs/apk/debug/app-debug.apk release-artifacts/BankTracker-v1.0.4.apk
+          cp app/build/outputs/apk/debug/app-debug.apk release-artifacts/BankTracker-v1.0.5.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -48,11 +48,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.4
-          name: "BankTracker v1.0.4"
+          tag_name: v1.0.5
+          name: "BankTracker v1.0.5"
           body_path: version.json
           files: |
-            release-artifacts/BankTracker-v1.0.4.apk
+            release-artifacts/BankTracker-v1.0.5.apk
             release-artifacts/BankTracker-latest.apk
           draft: false
           prerelease: false

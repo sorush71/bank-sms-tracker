@@ -20,6 +20,22 @@ class InstallmentReminderReceiver : BroadcastReceiver() {
         const val CHANNEL_ID = "installment_reminders_channel"
         const val CHANNEL_NAME = "یادآور اقساط و بدهی‌ها"
 
+        fun triggerTestReminder(context: Context) {
+            val db = DatabaseHelper.getInstance(context)
+            val all = db.getAllInstallments()
+            val inst = all.firstOrNull() ?: com.sorush.banktracker.model.Installment(
+                id = 999,
+                title = "وام مسکن (تست)",
+                bankName = "بانک قرض‌الحسنه رسالت",
+                amountToman = 2600000L,
+                dueDay = 15,
+                totalMonths = 24,
+                paidMonths = 8,
+                isActive = true
+            )
+            showReminderNotification(context, inst.title, inst.bankName, inst.amountToman, inst.id.toInt())
+        }
+
         fun checkAndTriggerReminders(context: Context) {
             val db = DatabaseHelper.getInstance(context)
             val all = db.getAllInstallments()
