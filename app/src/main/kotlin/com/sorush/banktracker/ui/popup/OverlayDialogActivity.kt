@@ -144,10 +144,12 @@ fun TransactionPopup(
     var categoryText by remember { mutableStateOf("") }
     var selectedParentCategory by remember { mutableStateOf("خوراک و سوپرمارکت") }
     var notesText by remember { mutableStateOf("") }
+    var showSimpleNotes by remember { mutableStateOf(false) }
     var suggestions by remember { mutableStateOf(listOf<String>()) }
 
     // Split purchase items
     val splitItems = remember { mutableStateListOf<TransactionItem>() }
+    val expandedItemNotes = remember { mutableStateMapOf<Int, Boolean>() }
 
     // Load Parmis categories tree
     var categoryTree by remember { mutableStateOf(listOf<CategoryNode>()) }
@@ -327,57 +329,117 @@ fun TransactionPopup(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
 
-                    // Notes / Description field
-                    OutlinedTextField(
-                        value = notesText,
-                        onValueChange = { notesText = it },
-                        label = { Text("توضیحات اختیاری (مثلاً: قیمت کیلویی، مکان...)") },
+                    // Collapsible Notes Button
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        maxLines = 2,
-                        shape = RoundedCornerShape(12.dp)
-                    )
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (notesText.isNotBlank()) "یادداشت: $notesText" else "توضیحات اختیاری:",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(
+                            onClick = { showSimpleNotes = !showSimpleNotes },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = if (showSimpleNotes) "بستن توضیحات ▲" else "📝 افزودن توضیحات ▼",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Notes / Description field (Only visible when expanded or has text)
+                    AnimatedVisibility(visible = showSimpleNotes || notesText.isNotBlank()) {
+                        OutlinedTextField(
+                            value = notesText,
+                            onValueChange = { notesText = it },
+                            label = { Text("توضیحات (مثلاً: قیمت کیلویی، مکان...)") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            maxLines = 2,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
 
                 } else {
                     // --- Split Purchase / Invoice Mode ---
                     val currentItemsSum = splitItems.sumOf { it.amountToman }
                     val diff = amountToman - currentItemsSum
+                    val isSumEqual = (diff == 0L) && splitItems.isNotEmpty()
 
-                    Text(
-                        text = "مجموع اقلام: ${NumberFormat.getNumberInstance(Locale.US).format(currentItemsSum)} از $formattedAmount تومان" +
-                                if (diff != 0L) " (${if (diff > 0) "باقیمانده: " else "اضافه: "}${NumberFormat.getNumberInstance(Locale.US).format(Math.abs(diff))} ت)" else " ✓",
-                        fontSize = 11.sp,
-                        color = if (diff == 0L) Color(0xFF2E7D32) else Color(0xFFE65100),
-                        fontWeight = FontWeight.Bold
-                    )
+                    // Strict Sum Feedback Banner
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSumEqual) Color(0xFFE8F5E9) else if (diff > 0) Color(0xFFFFF8E1) else Color(0xFFFFEBEE)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isSumEqual) {
+                                    "✓ مجموع اقلام دقیقاً برابر مبلغ فاکتور است."
+                                } else if (diff > 0) {
+                                    "⚠️ باقیمانده: ${NumberFormat.getNumberInstance(Locale.US).format(diff)} ت (باید صفر شود)"
+                                } else {
+                                    "⛔ ${NumberFormat.getNumberInstance(Locale.US).format(Math.abs(diff))} ت بیشتر از فاکتور!"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSumEqual) Color(0xFF2E7D32) else if (diff > 0) Color(0xFFE65100) else Color(0xFFC62828)
+                            )
+                            Text(
+                                text = "${NumberFormat.getNumberInstance(Locale.US).format(currentItemsSum)} / $formattedAmount ت",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (isSumEqual) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            )
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 220.dp),
+                            .heightIn(max = 240.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(splitItems.indices.toList()) { index ->
                             val item = splitItems[index]
+                            val isNoteExpanded = (expandedItemNotes[index] == true) || item.notes.isNotBlank()
+
                             Card(
                                 shape = RoundedCornerShape(12.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
+                                Column(modifier = Modifier.padding(8.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         OutlinedTextField(
                                             value = item.title,
                                             onValueChange = { newTitle ->
                                                 splitItems[index] = item.copy(title = newTitle, subCategory = newTitle)
                                             },
-                                            label = { Text("زیربخش / نام کالا (مثلاً: مرغ)", fontSize = 10.sp) },
+                                            label = { Text("زیربخش / کالا", fontSize = 10.sp) },
                                             modifier = Modifier.weight(1.3f),
                                             singleLine = true
                                         )
@@ -387,25 +449,51 @@ fun TransactionPopup(
                                                 val amt = newAmtStr.replace(",", "").toLongOrNull() ?: 0L
                                                 splitItems[index] = item.copy(amountToman = amt)
                                             },
-                                            label = { Text("قیمت (تومان)", fontSize = 10.sp) },
+                                            label = { Text("قیمت (ت)", fontSize = 10.sp) },
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            modifier = Modifier.weight(1.2f),
+                                            modifier = Modifier.weight(1.1f),
                                             singleLine = true
                                         )
-                                        IconButton(onClick = { splitItems.removeAt(index) }) {
-                                            Text("✕", color = MaterialTheme.colorScheme.error)
+                                        // Note Toggle Icon Button
+                                        IconButton(
+                                            onClick = {
+                                                val curr = expandedItemNotes[index] ?: false
+                                                expandedItemNotes[index] = !curr
+                                            },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Text(
+                                                text = if (item.notes.isNotBlank()) "📝✓" else "📝",
+                                                fontSize = 13.sp,
+                                                color = if (item.notes.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        // Delete Button
+                                        IconButton(
+                                            onClick = {
+                                                splitItems.removeAt(index)
+                                                expandedItemNotes.remove(index)
+                                            },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Text("✕", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                         }
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    OutlinedTextField(
-                                        value = item.notes,
-                                        onValueChange = { newNotes ->
-                                            splitItems[index] = item.copy(notes = newNotes)
-                                        },
-                                        label = { Text("توضیحات (مثلاً: قیمت کیلویی، تعداد)", fontSize = 10.sp) },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        singleLine = true
-                                    )
+
+                                    // Collapsible Notes field for this item
+                                    AnimatedVisibility(visible = isNoteExpanded) {
+                                        Column(modifier = Modifier.padding(top = 4.dp)) {
+                                            OutlinedTextField(
+                                                value = item.notes,
+                                                onValueChange = { newNotes ->
+                                                    splitItems[index] = item.copy(notes = newNotes)
+                                                },
+                                                label = { Text("توضیحات قلم (مثلاً: قیمت کیلویی، تعداد)", fontSize = 10.sp) },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -428,6 +516,10 @@ fun TransactionPopup(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Action buttons: Save & Ignore
+                val currentItemsSum = splitItems.sumOf { it.amountToman }
+                val diff = amountToman - currentItemsSum
+                val isSumEqual = (!isSplitMode) || (diff == 0L && splitItems.isNotEmpty())
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -445,20 +537,41 @@ fun TransactionPopup(
 
                     Button(
                         onClick = {
-                            if (isSplitMode && splitItems.isNotEmpty()) {
+                            if (isSplitMode) {
+                                if (!isSumEqual) {
+                                    Toast.makeText(
+                                        context,
+                                        "مجموع اقلام (${NumberFormat.getNumberInstance(Locale.US).format(currentItemsSum)} ت) باید دقیقاً برابر مبلغ فاکتور (${formattedAmount} ت) باشد.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    return@Button
+                                }
+                                if (splitItems.isEmpty() || splitItems.any { it.title.isBlank() }) {
+                                    Toast.makeText(context, "لطفاً نام یا زیربخش همه اقلام را مشخص کنید.", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
                                 onSave(selectedParentCategory, "فاکتور چندقلمی", notesText, splitItems.toList())
                             } else {
                                 val finalSubCat = if (categoryText.isBlank()) "سایر" else categoryText.trim()
                                 onSave(selectedParentCategory, finalSubCat, notesText, emptyList())
                             }
                         },
+                        enabled = isSumEqual,
                         modifier = Modifier.weight(1.5f),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                            containerColor = if (!isSumEqual) Color.Gray else MaterialTheme.colorScheme.primary
                         )
                     ) {
-                        Text("ثبت تراکنش", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (isSplitMode && !isSumEqual) {
+                                "مجموع برابر نیست (${NumberFormat.getNumberInstance(Locale.US).format(Math.abs(diff))} ت اختلاف)"
+                            } else {
+                                "ثبت تراکنش"
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

@@ -1,6 +1,6 @@
 {
-  "version_code": 4,
-  "version_name": "1.0.3",
-  "download_url": "https://github.com/sorush71/bank-sms-tracker/releases/latest/download/BankTracker-v1.0.3.apk",
-  "release_notes": "افزودن امکان تفکیک اقلام فاکتور (ریز هزینه با نام کالا، قیمت و توضیحات)، نگهداری اعلان در پنل در صورت رد شدن پاپ‌آپ، درخت کامل دسته‌بندی پارمیس، و بخش مدیریت، افزودن، ویرایش و حذف دسته‌ها و زیردسته‌ها"
+  "version_code": 5,
+  "version_name": "1.0.4",
+  "download_url": "https://github.com/sorush71/bank-sms-tracker/releases/latest/download/BankTracker-v1.0.4.apk",
+  "release_notes": "پنهان‌سازی پیش‌فرض کادرهای توضیحات پشت آیکون یادداشت و اجبار برابری دقیق مجموع اقلام تفکیکی با مبلغ پیامک"
 }
