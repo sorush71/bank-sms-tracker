@@ -93,19 +93,25 @@ fun MainScreen() {
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    label = { Text("داشبورد ماهانه") },
+                    label = { Text("داشبورد") },
                     icon = { Text("📊") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    label = { Text("تراکنش‌ها") },
-                    icon = { Text("💳") }
+                    label = { Text("اقساط و بدهی") },
+                    icon = { Text("📅") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    label = { Text("بانک‌ها و تنظیمات") },
+                    label = { Text("تراکنش‌ها") },
+                    icon = { Text("💳") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
+                    label = { Text("تنظیمات") },
                     icon = { Text("⚙️") }
                 )
             }
@@ -165,8 +171,9 @@ fun MainScreen() {
 
             when (selectedTab) {
                 0 -> MonthlyDashboardTab(db = db)
-                1 -> TransactionsHistoryTab(db = db)
-                2 -> SettingsTab(db = db, onRefreshPermissions = {
+                1 -> InstallmentsTab(db = db)
+                2 -> TransactionsHistoryTab(db = db)
+                3 -> SettingsTab(db = db, onRefreshPermissions = {
                     hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context) else true
                 })
             }
@@ -389,6 +396,374 @@ fun CategoryProgressItem(item: CategoryExpense) {
             )
         }
     }
+}
+
+@Composable
+fun InstallmentsTab(db: DatabaseHelper) {
+    val context = LocalContext.current
+    val now = remember { JalaliCalendar.now() }
+    var installments by remember { mutableStateOf(listOf<com.sorush.banktracker.model.Installment>()) }
+    var summary by remember { mutableStateOf<com.sorush.banktracker.model.InstallmentSummary?>(null) }
+    var showAddDialog by remember { mutableStateOf(false) }
+
+    fun refresh() {
+        installments = db.getAllInstallments()
+        summary = db.getInstallmentSummary()
+    }
+
+    LaunchedEffect(Unit) {
+        refresh()
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Summary Cards: Monthly Total & Remaining Debt
+        item {
+            summary?.let { s ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    FinanceCard(
+                        title = "مجموع اقساط ماه",
+                        amount = s.totalMonthlyAmountToman,
+                        color = Color(0xFFC62828),
+                        bgColor = Color(0xFFFFEBEE),
+                        modifier = Modifier.weight(1f)
+                    )
+                    FinanceCard(
+                        title = "کل بدهی باقیمانده",
+                        amount = s.totalRemainingDebtToman,
+                        color = Color(0xFFE65100),
+                        bgColor = Color(0xFFFFF3E0),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
+        // Bank Breakdown Section
+        item {
+            summary?.let { s ->
+                if (s.bankBreakdown.isNotEmpty()) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                text = "مجموع اقساط به تفکیک بانک:",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            s.bankBreakdown.forEach { b ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "${b.bankName} (${b.count} فقره):",
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "${NumberFormat.getNumberInstance(Locale.US).format(b.monthlyTotalToman)} تومان/ماه",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = Color(0xFFC62828)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Test Reminder Notification & Add Installment Buttons
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { showAddDialog = true },
+                    modifier = Modifier.weight(1.5f),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("+ ثبت قسط جدید", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        com.sorush.banktracker.receiver.InstallmentReminderReceiver.checkAndTriggerReminders(context)
+                        Toast.makeText(context, "بررسی و ارسال نوتیفیکیشن انجام شد", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("🔔 تست اعلان", fontSize = 12.sp)
+                }
+            }
+        }
+
+        // Section Title
+        item {
+            Text(
+                text = "لیست اقساط و بدهی‌های فعال",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+
+        // Installment Cards
+        if (installments.isEmpty()) {
+            item {
+                Text(
+                    text = "هیچ قسط فعالی ثبت نشده است.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            }
+        } else {
+            items(installments) { inst ->
+                InstallmentCard(
+                    installment = inst,
+                    todayDay = now.day,
+                    onMarkPaid = {
+                        db.incrementInstallmentPaid(inst.id)
+                        refresh()
+                    },
+                    onDelete = {
+                        db.deleteInstallment(inst.id)
+                        refresh()
+                    }
+                )
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddInstallmentDialog(
+            onDismiss = { showAddDialog = false },
+            onConfirm = { title, bank, amount, dueDay, months ->
+                db.insertInstallment(
+                    title = title,
+                    bankName = bank,
+                    amountToman = amount,
+                    dueDay = dueDay,
+                    totalMonths = months
+                )
+                showAddDialog = false
+                refresh()
+            }
+        )
+    }
+}
+
+@Composable
+fun InstallmentCard(
+    installment: com.sorush.banktracker.model.Installment,
+    todayDay: Int,
+    onMarkPaid: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val isDueTomorrow = (installment.dueDay == todayDay + 1) || ((todayDay >= 29) && installment.dueDay == 1)
+    val daysUntilDue = if (installment.dueDay >= todayDay) installment.dueDay - todayDay else (30 - todayDay + installment.dueDay)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isDueTomorrow) Color(0xFFFFF3E0) else MaterialTheme.colorScheme.surfaceVariant
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isDueTomorrow) 4.dp else 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            // Title & Due Tag
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(text = installment.title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text(text = installment.bankName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                if (isDueTomorrow) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFE65100))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("⚠️ فردا سررسید است!", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("سررسید: ${installment.dueDay} هر ماه ($daysUntilDue روز مانده)", fontSize = 11.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Amount
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(text = "مبلغ قسط ماهانه:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = "${NumberFormat.getNumberInstance(Locale.US).format(installment.amountToman)} تومان",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 15.sp,
+                    color = Color(0xFFC62828)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Progress: Paid vs Remaining
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "${installment.paidMonths} از ${installment.totalMonths} قسط پرداخت شده",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "باقیمانده: ${NumberFormat.getNumberInstance(Locale.US).format(installment.totalRemainingDebtToman)} تومان",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { installment.progressPercent },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.outlineVariant
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Buttons: Mark 1 Paid & Delete
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onMarkPaid,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("✓ پرداخت این ماه", fontSize = 11.sp)
+                }
+
+                IconButton(onClick = onDelete) {
+                    Text("🗑️", fontSize = 14.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AddInstallmentDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, Long, Int, Int) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var bank by remember { mutableStateOf("بانک قرض‌الحسنه رسالت") }
+    var amountStr by remember { mutableStateOf("") }
+    var dueDayStr by remember { mutableStateOf("15") }
+    var monthsStr by remember { mutableStateOf("24") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ثبت قسط یا وام جدید", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("عنوان وام/قسط (مثلاً: وام مسکن)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = bank,
+                    onValueChange = { bank = it },
+                    label = { Text("بانک مقصد (حسابی که باید پول توش باشه)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = amountStr,
+                    onValueChange = { amountStr = it },
+                    label = { Text("مبلغ هر قسط به تومان (مثلاً: 2600000)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = dueDayStr,
+                        onValueChange = { dueDayStr = it },
+                        label = { Text("روز سررسید (۱-۳۱)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = monthsStr,
+                        onValueChange = { monthsStr = it },
+                        label = { Text("تعداد کل ماه‌ها") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val amt = amountStr.replace(",", "").toLongOrNull() ?: 0L
+                val day = dueDayStr.toIntOrNull() ?: 1
+                val months = monthsStr.toIntOrNull() ?: 12
+                if (title.isNotBlank() && amt > 0) {
+                    onConfirm(title, bank, amt, day, months)
+                }
+            }) {
+                Text("ثبت")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("انصراف")
+            }
+        }
+    )
 }
 
 @Composable

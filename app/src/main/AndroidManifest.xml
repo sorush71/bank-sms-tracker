@@ -43,6 +43,15 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".receiver.InstallmentReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="com.sorush.banktracker.CHECK_INSTALLMENTS" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

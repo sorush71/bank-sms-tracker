@@ -15,11 +15,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         const val DATABASE_NAME = "bank_tracker.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
 
         private const val TABLE_TRANSACTIONS = "transactions"
         private const val TABLE_CATEGORIES = "categories"
         private const val TABLE_WHITELIST = "bank_whitelist"
+        private const val TABLE_INSTALLMENTS = "installments"
 
         @Volatile
         private var instance: DatabaseHelper? = null
@@ -76,6 +77,47 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         insertInitialCategory(db, "تاکسی و حمل‌ونقل")
         insertInitialCategory(db, "خرید اینترنتی")
         insertInitialCategory(db, "اجاره و قبوض")
+
+        // Create installments table
+        createInstallmentsTable(db)
+        insertInitialInstallment(db, "وام قرض‌الحسنه", "بانک قرض‌الحسنه رسالت", 2600000L, 14, 24, 6)
+        insertInitialInstallment(db, "قسط تسهیلات", "بانک پاسارگاد", 870000L, 25, 36, 10)
+    }
+
+    private fun createInstallmentsTable(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS $TABLE_INSTALLMENTS (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                bank_name TEXT NOT NULL,
+                amount_toman INTEGER NOT NULL,
+                due_day INTEGER NOT NULL,
+                total_months INTEGER NOT NULL,
+                paid_months INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+        """.trimIndent())
+    }
+
+    private fun insertInitialInstallment(
+        db: SQLiteDatabase,
+        title: String,
+        bank: String,
+        amount: Long,
+        dueDay: Int,
+        total: Int,
+        paid: Int
+    ) {
+        val cv = ContentValues().apply {
+            put("title", title)
+            put("bank_name", bank)
+            put("amount_toman", amount)
+            put("due_day", dueDay)
+            put("total_months", total)
+            put("paid_months", paid)
+            put("is_active", 1)
+        }
+        db.insert(TABLE_INSTALLMENTS, null, cv)
     }
 
     private fun insertDefaultWhitelist(db: SQLiteDatabase, senderId: String, name: String) {
@@ -97,7 +139,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Migration logic for future updates
+        if (oldVersion < 2) {
+            createInstallmentsTable(db)
+            insertInitialInstallment(db, "وام قرض‌الحسنه", "بانک قرض‌الحسنه رسالت", 2600000L, 14, 24, 6)
+            insertInitialInstallment(db, "قسط تسهیلات", "بانک پاسارگاد", 870000L, 25, 36, 10)
+        }
     }
 
     // --- Transactions ---
@@ -309,5 +355,99 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             }
         }
         return list
+    }
+
+    // --- Installments & Debt Reminders ---
+
+    fun insertInstallment(
+        title: String,
+        bankName: String,
+        amountToman: Long,
+        dueDay: Int,
+        totalMonths: Int,
+        paidMonths: Int = 0
+    ): Long {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("title", title.trim())
+            put("bank_name", bankName.trim())
+            put("amount_toman", amountToman)
+            put("due_day", dueDay.coerceIn(1, 31))
+            put("total_months", totalMonths.coerceAtLeast(1))
+            put("paid_months", paidMonths.coerceAtLeast(0))
+            put("is_active", 1)
+        }
+        return db.insert(TABLE_INSTALLMENTS, null, cv)
+    }
+
+    fun getAllInstallments(): List<com.sorush.banktracker.model.Installment> {
+        val list = mutableListOf<com.sorush.banktracker.model.Installment>()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT id, title, bank_name, amount_toman, due_day, total_months, paid_months, is_active " +
+            "FROM $TABLE_INSTALLMENTS WHERE is_active = 1 ORDER BY due_day ASC",
+            null
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                list.add(
+                    com.sorush.banktracker.model.Installment(
+                        id = it.getLong(0),
+                        title = it.getString(1),
+                        bankName = it.getString(2),
+                        amountToman = it.getLong(3),
+                        dueDay = it.getInt(4),
+                        totalMonths = it.getInt(5),
+                        paidMonths = it.getInt(6),
+                        isActive = it.getInt(7) == 1
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    fun incrementInstallmentPaid(id: Long) {
+        val db = writableDatabase
+        db.execSQL(
+            "UPDATE $TABLE_INSTALLMENTS SET paid_months = MIN(paid_months + 1, total_months) WHERE id = ?",
+            arrayOf(id.toString())
+        )
+    }
+
+    fun deleteInstallment(id: Long) {
+        val db = writableDatabase
+        db.delete(TABLE_INSTALLMENTS, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun getInstallmentSummary(): com.sorush.banktracker.model.InstallmentSummary {
+        val all = getAllInstallments()
+        var totalMonthly = 0L
+        var totalRemainingDebt = 0L
+
+        val bankMap = mutableMapOf<String, Pair<Long, Int>>() // bank -> (monthlyTotal, count)
+
+        for (inst in all) {
+            totalMonthly += inst.amountToman
+            totalRemainingDebt += inst.totalRemainingDebtToman
+
+            val existing = bankMap.getOrDefault(inst.bankName, Pair(0L, 0))
+            bankMap[inst.bankName] = Pair(existing.first + inst.amountToman, existing.second + 1)
+        }
+
+        val bankBreakdown = bankMap.map { (bank, pair) ->
+            com.sorush.banktracker.model.BankInstallmentTotal(
+                bankName = bank,
+                monthlyTotalToman = pair.first,
+                count = pair.second
+            )
+        }.sortedByDescending { it.monthlyTotalToman }
+
+        return com.sorush.banktracker.model.InstallmentSummary(
+            totalMonthlyAmountToman = totalMonthly,
+            totalRemainingDebtToman = totalRemainingDebt,
+            activeCount = all.size,
+            bankBreakdown = bankBreakdown
+        )
     }
 }
